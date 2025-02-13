@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const lectureController = require("../controllers/lectureController");
 const auth = require("../middleware/auth");
-const checkRole = require("../middleware/roleCheck");
+const { checkRole } = require("../middleware/roleCheck");
 
 router.post("/", auth, checkRole(["teacher"]), lectureController.createLecture);
 router.put(

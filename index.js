@@ -10,22 +10,30 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Connect to MongoDB
+// MongoDB Connection
 connectDB();
 
 // Routes
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/auth", require("./routes/auth"));
-app.use("/api/courses", require("./routes/course"));
+app.use("/api/courses", require("./routes/courses"));
 app.use("/api/lectures", require("./routes/lecture"));
 app.use("/api/semesters", require("./routes/semester"));
-app.use("/api/students", require("./routes/student"));
-app.use("/api/teachers", require("./routes/teacher"));
+app.use("/api/students", require("./routes/students"));
+app.use("/api/teachers", require("./routes/teachers"));
 
-module.exports = app;
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: "Internal Server Error" });
+});
 
-// src/server.js
+// Handle 404 routes
+app.use((req, res) => {
+  res.status(404).json({ error: "Route not found" });
+});
 
+// Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });

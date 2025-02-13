@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const studentController = require("../controllers/studentController");
-const { auth } = require("../middleware/auth");
+const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
 router.post(
