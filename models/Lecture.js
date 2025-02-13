@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
+
 const lectureSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
@@ -9,10 +9,8 @@ const lectureSchema = new mongoose.Schema(
       ref: "Course",
       required: true,
     },
-    order: { type: Number, required: true },
   },
   { timestamps: true }
 );
 
-const Lecture = mongoose.model("Lecture", lectureSchema);
-module.exports = Lecture;
+module.exports = mongoose.model("Lecture", lectureSchema);

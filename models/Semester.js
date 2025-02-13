@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
+
 const semesterSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
@@ -10,5 +10,4 @@ const semesterSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-const Semester = mongoose.model("Semester", semesterSchema);
-module.exports = Semester;
+module.exports = mongoose.model("Semester", semesterSchema);
