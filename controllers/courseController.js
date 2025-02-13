@@ -1,4 +1,5 @@
-const { Course, Lecture } = require("../models");
+const Course = require("../models/Course");
+const Lecture = require("../models/Lecture");
 
 exports.createCourse = async (req, res) => {
   try {
@@ -246,12 +247,9 @@ exports.enrollCourse = async (req, res) => {
     }
 
     if (course.teacher.toString() !== req.user.teacher.toString()) {
-      return res
-        .status(403)
-        .json({
-          error:
-            "You can only enroll in courses taught by your assigned teacher",
-        });
+      return res.status(403).json({
+        error: "You can only enroll in courses taught by your assigned teacher",
+      });
     }
 
     if (!course.students.includes(req.user._id)) {
