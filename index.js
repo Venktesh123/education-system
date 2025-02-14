@@ -14,6 +14,9 @@ app.use(express.json());
 connectDB();
 
 // Routes
+app.get("/", (req, res) => {
+  res.send("<h1>Backend Working</h1>");
+});
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/courses", require("./routes/courses"));
