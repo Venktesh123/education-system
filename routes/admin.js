@@ -16,7 +16,6 @@ router.post(
   auth,
   checkRole(["admin"]),
   (req, res, next) => {
-    console.log("Processing upload request");
     upload.single("file")(req, res, (err) => {
       if (err) {
         console.error("Upload error:", err);
