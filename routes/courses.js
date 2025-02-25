@@ -1,15 +1,28 @@
 const express = require("express");
 const router = express.Router();
-const courseController = require("../controllers/courseController");
+const {
+  getTeacherCourses,
+  getCourseById,
+  createCourse,
+  updateCourse,
+  deleteCourse,
+} = require("../controllers/courseController");
 const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
-router.post("/", auth, checkRole(["teacher"]), courseController.createCourse);
-router.put("/:id", auth, checkRole(["teacher"]), courseController.updateCourse);
-router.get("/:id", auth, courseController.getCourse);
-router.get("/", auth, courseController.getAllCourses);
-router.get("/details/:id", auth, courseController.getCourseDetails);
+// Get all courses for teacher
+router.get("/courses", auth, checkRole(["teacher"]), getTeacherCourses);
 
-// Get all courses
+// Get specific course by ID
+router.get("/courses/:courseId", auth, checkRole(["teacher"]), getCourseById);
+
+// Create new course
+router.post("/", auth, checkRole(["teacher"]), createCourse);
+
+// Update course
+router.put("/courses/:courseId", auth, checkRole(["teacher"]), updateCourse);
+
+// Delete course
+router.delete("/courses/:courseId", auth, checkRole(["teacher"]), deleteCourse);
 
 module.exports = router;
