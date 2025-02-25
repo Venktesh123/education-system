@@ -2,11 +2,12 @@ const mongoose = require("mongoose");
 
 const courseSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
-    description: { type: String, required: true },
-    teacher: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Teacher",
+    title: {
+      type: String,
+      required: true,
+    },
+    aboutCourse: {
+      type: String,
       required: true,
     },
     semester: {
@@ -14,8 +15,40 @@ const courseSchema = new mongoose.Schema(
       ref: "Semester",
       required: true,
     },
-    lectures: [{ type: mongoose.Schema.Types.ObjectId, ref: "Lecture" }],
-    students: [{ type: mongoose.Schema.Types.ObjectId, ref: "Student" }],
+    teacher: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Teacher",
+      required: true,
+    },
+    lectures: [
+      {
+        title: String,
+        recordingUrl: String,
+        date: Date,
+        duration: Number,
+      },
+    ],
+    // References to other models
+    outcomes: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CourseOutcome",
+    },
+    schedule: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CourseSchedule",
+    },
+    syllabus: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CourseSyllabus",
+    },
+    weeklyPlan: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "WeeklyPlan",
+    },
+    creditPoints: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CreditPoints",
+    },
   },
   { timestamps: true }
 );

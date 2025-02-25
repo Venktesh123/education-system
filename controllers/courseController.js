@@ -1,267 +1,498 @@
 const Course = require("../models/Course");
 const Teacher = require("../models/Teacher");
-const Student = require("../models/Student");
+const CourseOutcome = require("../models/CourseOutcome");
+const CourseSchedule = require("../models/CourseSchedule");
+const CourseSyllabus = require("../models/CourseSyllabus");
+const WeeklyPlan = require("../models/WeeklyPlan");
+const CreditPoints = require("../models/CreditPoints");
+const mongoose = require("mongoose");
 
-const createCourse = async (req, res) => {
+// Helper function to format course data
+const formatCourseData = (course) => {
+  return {
+    _id: course._id,
+    title: course.title,
+    aboutCourse: course.aboutCourse,
+    semester: course.semester,
+    teacher: course.teacher,
+    creditPoints: course.creditPoints
+      ? {
+          lecture: course.creditPoints.lecture,
+          tutorial: course.creditPoints.tutorial,
+          practical: course.creditPoints.practical,
+          project: course.creditPoints.project,
+        }
+      : {
+          lecture: 0,
+          tutorial: 0,
+          practical: 0,
+          project: 0,
+        },
+    learningOutcomes: course.outcomes ? course.outcomes.outcomes : [],
+    weeklyPlan: course.weeklyPlan
+      ? course.weeklyPlan.weeks.map((week) => ({
+          weekNumber: week.weekNumber,
+          topics: week.topics,
+        }))
+      : [],
+    syllabus: course.syllabus
+      ? course.syllabus.modules.map((module) => ({
+          moduleNumber: module.moduleNumber,
+          moduleTitle: module.moduleTitle,
+          topics: module.topics,
+        }))
+      : [],
+    courseSchedule: course.schedule
+      ? {
+          classStartDate: course.schedule.classStartDate,
+          classEndDate: course.schedule.classEndDate,
+          midSemesterExamDate: course.schedule.midSemesterExamDate,
+          endSemesterExamDate: course.schedule.endSemesterExamDate,
+          classDaysAndTimes: course.schedule.classDaysAndTimes.map((day) => ({
+            day: day.day,
+            time: day.time,
+          })),
+        }
+      : {
+          classStartDate: "",
+          classEndDate: "",
+          midSemesterExamDate: "",
+          endSemesterExamDate: "",
+          classDaysAndTimes: [],
+        },
+    lectures: course.lectures || [],
+  };
+};
+
+// Get all courses for logged-in teacher
+const getTeacherCourses = async function (req, res) {
   try {
-    const { name, description, semesterId } = req.body;
+    // Find teacher using the user ID from token
+    const teacher = await Teacher.findOne({ user: req.user.id }).populate({
+      path: "user",
+      select: "name email role", // Get basic user info
+    });
 
-    // Find teacher with their details
-    const teacher = await Teacher.findOne({ user: req.user._id });
     if (!teacher) {
       return res.status(404).json({ error: "Teacher not found" });
     }
 
-    // Find all students with matching teacherEmail
-    const students = await Student.find({ teacherEmail: teacher.email });
-
-    // Create course with those students
-    const course = new Course({
-      name,
-      description,
-      teacher: teacher._id,
-      semester: semesterId,
-      students: students.map((student) => student._id), // Add all matching students
+    // Get all students for this teacher using virtual populate
+    await teacher.populate({
+      path: "students", // Virtual field defined in teacherSchema
+      populate: {
+        path: "user",
+        select: "name email", // Include basic user details for students
+      },
     });
 
-    await course.save();
+    // Get all courses with populated fields
+    const courses = await Course.find({ teacher: teacher._id })
+      .populate("semester")
+      .populate("outcomes")
+      .populate("schedule")
+      .populate("syllabus")
+      .populate("weeklyPlan")
+      .populate("creditPoints")
+      .sort({ createdAt: -1 });
+
+    // Format response with teacher and students data
+    const formattedCourses = courses.map((course) => formatCourseData(course));
+
+    // Return formatted data with teacher and students information
+    res.json({
+      teacher: {
+        _id: teacher._id,
+        name: teacher.user?.name,
+        email: teacher.email, // Using the email field from Teacher model
+        totalStudents: teacher.students?.length || 0,
+      },
+      students:
+        teacher.students?.map((student) => ({
+          _id: student._id,
+          name: student.user?.name,
+          email: student.user?.email,
+          teacherEmail: student.teacherEmail, // Include teacherEmail from Student model
+        })) || [],
+      courses: formattedCourses,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get specific course by ID
+const getCourseById = async function (req, res) {
+  try {
+    const teacher = await Teacher.findOne({ user: req.user.userId });
+    if (!teacher) {
+      return res.status(404).json({ error: "Teacher not found" });
+    }
+
+    const course = await Course.findOne({
+      _id: req.params.courseId,
+      teacher: teacher._id,
+    })
+      .populate("semester")
+      .populate("outcomes")
+      .populate("schedule")
+      .populate("syllabus")
+      .populate("weeklyPlan")
+      .populate("creditPoints");
+
+    if (!course) {
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    const formattedCourse = formatCourseData(course);
+    res.json(formattedCourse);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Create new course
+const createCourse = async function (req, res) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      throw new Error("Teacher not found");
+    }
+
+    // Create main course
+    const course = new Course({
+      title: req.body.title,
+      aboutCourse: req.body.aboutCourse,
+      semester: req.body.semester,
+      teacher: teacher._id,
+      lectures: req.body.lectures || [],
+    });
+    await course.save({ session });
+
+    // Create learning outcomes
+    if (req.body.learningOutcomes && req.body.learningOutcomes.length > 0) {
+      const outcome = await CourseOutcome.create(
+        [
+          {
+            outcomes: req.body.learningOutcomes,
+            course: course._id,
+          },
+        ],
+        { session }
+      );
+      course.outcomes = outcome[0]._id;
+    }
+
+    // Create course schedule
+    if (req.body.courseSchedule) {
+      const scheduleData = {
+        ...req.body.courseSchedule,
+        course: course._id,
+      };
+
+      const schedule = await CourseSchedule.create([scheduleData], { session });
+      course.schedule = schedule[0]._id;
+    }
+
+    // Create syllabus
+    if (req.body.syllabus && req.body.syllabus.length > 0) {
+      const syllabus = await CourseSyllabus.create(
+        [
+          {
+            modules: req.body.syllabus,
+            course: course._id,
+          },
+        ],
+        { session }
+      );
+      course.syllabus = syllabus[0]._id;
+    }
+
+    // Create weekly plan
+    if (req.body.weeklyPlan && req.body.weeklyPlan.length > 0) {
+      const weeklyPlan = await WeeklyPlan.create(
+        [
+          {
+            weeks: req.body.weeklyPlan,
+            course: course._id,
+          },
+        ],
+        { session }
+      );
+      course.weeklyPlan = weeklyPlan[0]._id;
+    }
+
+    // Create credit points
+    if (req.body.creditPoints) {
+      const creditPoints = await CreditPoints.create(
+        [
+          {
+            ...req.body.creditPoints,
+            course: course._id,
+          },
+        ],
+        { session }
+      );
+      course.creditPoints = creditPoints[0]._id;
+    }
+
+    // Save updated course with all references
+    await course.save({ session });
 
     // Add course to teacher's courses
     teacher.courses.push(course._id);
-    await teacher.save();
+    await teacher.save({ session });
 
-    // Add course to each student's courses array
-    await Student.updateMany(
-      { teacherEmail: teacher.email },
-      { $push: { courses: course._id } }
-    );
+    await session.commitTransaction();
 
-    // Get populated course data for response
-    const populatedCourse = await Course.findById(course._id)
-      .populate({
-        path: "teacher",
-        populate: {
-          path: "user",
-          select: "name email",
-        },
-      })
-      .populate({
-        path: "students",
-        populate: {
-          path: "user",
-          select: "name email",
-        },
-      })
+    // Get the fully populated course
+    const createdCourse = await Course.findById(course._id)
       .populate("semester")
-      .populate("lectures");
+      .populate("outcomes")
+      .populate("schedule")
+      .populate("syllabus")
+      .populate("weeklyPlan")
+      .populate("creditPoints");
 
-    res.status(201).json({
-      message: "Course created successfully",
-      course: {
-        id: populatedCourse._id,
-        name: populatedCourse.name,
-        description: populatedCourse.description,
-        teacher: {
-          name: populatedCourse.teacher.user.name,
-          email: populatedCourse.teacher.user.email,
-        },
-        semester: populatedCourse.semester,
-        students: populatedCourse.students.map((student) => ({
-          id: student._id,
-          name: student.user.name,
-          email: student.user.email,
-        })),
-        totalStudents: populatedCourse.students.length,
-      },
-    });
+    const formattedCourse = formatCourseData(createdCourse);
+    res.status(201).json(formattedCourse);
   } catch (error) {
-    console.error("Error in createCourse:", error);
+    await session.abortTransaction();
     res.status(400).json({ error: error.message });
+  } finally {
+    session.endSession();
   }
 };
 
-const updateCourse = async (req, res) => {
+// Update course
+const updateCourse = async function (req, res) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { name, description } = req.body;
-    const course = await Course.findById(req.params.id);
+    const teacher = await Teacher.findOne({ user: req.user.userId });
+    if (!teacher) {
+      throw new Error("Teacher not found");
+    }
+
+    const course = await Course.findOne({
+      _id: req.params.courseId,
+      teacher: teacher._id,
+    });
 
     if (!course) {
-      return res.status(404).json({ error: "Course not found" });
+      throw new Error("Course not found");
     }
 
-    const teacher = await Teacher.findOne({ user: req.user._id });
-    if (!teacher || !course.teacher.equals(teacher._id)) {
-      return res.status(403).json({ error: "Not authorized" });
+    // Update main course fields
+    if (req.body.title) course.title = req.body.title;
+    if (req.body.aboutCourse) course.aboutCourse = req.body.aboutCourse;
+    if (req.body.semester) course.semester = req.body.semester;
+    if (req.body.lectures) course.lectures = req.body.lectures;
+
+    await course.save({ session });
+
+    // Update learning outcomes
+    if (req.body.learningOutcomes) {
+      if (course.outcomes) {
+        await CourseOutcome.findByIdAndUpdate(
+          course.outcomes,
+          { outcomes: req.body.learningOutcomes },
+          { session }
+        );
+      } else {
+        const outcome = await CourseOutcome.create(
+          [
+            {
+              outcomes: req.body.learningOutcomes,
+              course: course._id,
+            },
+          ],
+          { session }
+        );
+        course.outcomes = outcome[0]._id;
+        await course.save({ session });
+      }
     }
 
-    course.name = name;
-    course.description = description;
-    await course.save();
+    // Update course schedule
+    if (req.body.courseSchedule) {
+      if (course.schedule) {
+        await CourseSchedule.findByIdAndUpdate(
+          course.schedule,
+          req.body.courseSchedule,
+          { session }
+        );
+      } else {
+        const schedule = await CourseSchedule.create(
+          [
+            {
+              ...req.body.courseSchedule,
+              course: course._id,
+            },
+          ],
+          { session }
+        );
+        course.schedule = schedule[0]._id;
+        await course.save({ session });
+      }
+    }
 
-    res.json(course);
+    // Update syllabus
+    if (req.body.syllabus) {
+      if (course.syllabus) {
+        await CourseSyllabus.findByIdAndUpdate(
+          course.syllabus,
+          { modules: req.body.syllabus },
+          { session }
+        );
+      } else {
+        const syllabus = await CourseSyllabus.create(
+          [
+            {
+              modules: req.body.syllabus,
+              course: course._id,
+            },
+          ],
+          { session }
+        );
+        course.syllabus = syllabus[0]._id;
+        await course.save({ session });
+      }
+    }
+
+    // Update weekly plan
+    if (req.body.weeklyPlan) {
+      if (course.weeklyPlan) {
+        await WeeklyPlan.findByIdAndUpdate(
+          course.weeklyPlan,
+          { weeks: req.body.weeklyPlan },
+          { session }
+        );
+      } else {
+        const weeklyPlan = await WeeklyPlan.create(
+          [
+            {
+              weeks: req.body.weeklyPlan,
+              course: course._id,
+            },
+          ],
+          { session }
+        );
+        course.weeklyPlan = weeklyPlan[0]._id;
+        await course.save({ session });
+      }
+    }
+
+    // Update credit points
+    if (req.body.creditPoints) {
+      if (course.creditPoints) {
+        await CreditPoints.findByIdAndUpdate(
+          course.creditPoints,
+          req.body.creditPoints,
+          { session }
+        );
+      } else {
+        const creditPoints = await CreditPoints.create(
+          [
+            {
+              ...req.body.creditPoints,
+              course: course._id,
+            },
+          ],
+          { session }
+        );
+        course.creditPoints = creditPoints[0]._id;
+        await course.save({ session });
+      }
+    }
+
+    await session.commitTransaction();
+
+    // Get updated course with all populated fields
+    const updatedCourse = await Course.findById(course._id)
+      .populate("semester")
+      .populate("outcomes")
+      .populate("schedule")
+      .populate("syllabus")
+      .populate("weeklyPlan")
+      .populate("creditPoints");
+
+    const formattedCourse = formatCourseData(updatedCourse);
+    res.json(formattedCourse);
   } catch (error) {
+    await session.abortTransaction();
     res.status(400).json({ error: error.message });
+  } finally {
+    session.endSession();
   }
 };
 
-const getCourse = async (req, res) => {
+// Delete course and all related data
+const deleteCourse = async function (req, res) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const course = await Course.findById(req.params.id)
-      .populate("teacher", "name")
-      .populate("lectures")
-      .populate("semester");
+    const teacher = await Teacher.findOne({ user: req.user.userId });
+    if (!teacher) {
+      throw new Error("Teacher not found");
+    }
+
+    const course = await Course.findOne({
+      _id: req.params.courseId,
+      teacher: teacher._id,
+    });
 
     if (!course) {
-      return res.status(404).json({ error: "Course not found" });
+      throw new Error("Course not found");
     }
 
-    res.json(course);
+    // Delete all related documents
+    if (course.outcomes) {
+      await CourseOutcome.findByIdAndDelete(course.outcomes, { session });
+    }
+
+    if (course.schedule) {
+      await CourseSchedule.findByIdAndDelete(course.schedule, { session });
+    }
+
+    if (course.syllabus) {
+      await CourseSyllabus.findByIdAndDelete(course.syllabus, { session });
+    }
+
+    if (course.weeklyPlan) {
+      await WeeklyPlan.findByIdAndDelete(course.weeklyPlan, { session });
+    }
+
+    if (course.creditPoints) {
+      await CreditPoints.findByIdAndDelete(course.creditPoints, { session });
+    }
+
+    // Remove course from teacher's courses
+    teacher.courses = teacher.courses.filter((id) => !id.equals(course._id));
+    await teacher.save({ session });
+
+    // Delete the course
+    await Course.findByIdAndDelete(course._id, { session });
+
+    await session.commitTransaction();
+    res.json({ message: "Course deleted successfully" });
   } catch (error) {
+    await session.abortTransaction();
     res.status(400).json({ error: error.message });
-  }
-};
-
-const getAllCourses = async (req, res) => {
-  try {
-    const courses = await Course.find()
-      .populate({
-        path: "teacher",
-        populate: {
-          path: "user",
-          select: "name email",
-        },
-      })
-      .populate("semester")
-      .populate("lectures")
-      .populate({
-        path: "students",
-        populate: {
-          path: "user",
-          select: "name email",
-        },
-      });
-
-    const response = courses.map((course) => ({
-      id: course._id,
-      name: course.name,
-      description: course.description,
-      teacher: {
-        name: course.teacher.user.name,
-        email: course.teacher.user.email,
-      },
-      semester: {
-        name: course.semester.name,
-        startDate: course.semester.startDate,
-        endDate: course.semester.endDate,
-      },
-      statistics: {
-        totalLectures: course.lectures.length,
-        totalStudents: course.students.length,
-      },
-      createdAt: course.createdAt,
-    }));
-
-    res.json({
-      totalCourses: courses.length,
-      courses: response,
-    });
-  } catch (error) {
-    console.error("Error in getAllCourses:", error);
-    res.status(500).json({ error: error.message });
-  }
-};
-const getCourseDetails = async (req, res) => {
-  try {
-    const courseId = req.params.id;
-
-    // Find course with all populated relationships
-    const course = await Course.findById(courseId)
-      .populate({
-        path: "teacher",
-        populate: {
-          path: "user",
-          select: "name email",
-        },
-      })
-      .populate({
-        path: "students",
-        populate: {
-          path: "user",
-          select: "name email",
-        },
-      })
-      .populate("semester")
-      .populate({
-        path: "lectures",
-        select: "title content videoUrl createdAt",
-      });
-
-    if (!course) {
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    // Get all students of the teacher for comparison
-    const allTeacherStudents = await Teacher.findById(
-      course.teacher._id
-    ).populate({
-      path: "students",
-      populate: {
-        path: "user",
-        select: "name email",
-      },
-    });
-    console.log(course.students);
-    // Structure the response
-    const response = {
-      courseInfo: {
-        id: course._id,
-        name: course.name,
-        description: course.description,
-        createdAt: course.createdAt,
-        updatedAt: course.updatedAt,
-      },
-      teacher: {
-        id: course.teacher._id,
-        name: course.teacher.user.name,
-        email: course.teacher.user.email,
-      },
-      semester: {
-        id: course.semester._id,
-        name: course.semester.name,
-        startDate: course.semester.startDate,
-        endDate: course.semester.endDate,
-      },
-      lectures: course.lectures.map((lecture) => ({
-        id: lecture._id,
-        title: lecture.title,
-        content: lecture.content,
-        videoUrl: lecture.videoUrl,
-        createdAt: lecture.createdAt,
-      })),
-      students: course.students.map((student) => ({
-        id: student._id,
-        name: student.user.name,
-        email: student.user.email,
-        enrolledAt: student.createdAt,
-      })),
-      statistics: {
-        totalLectures: course.lectures.length,
-        totalEnrolledStudents: course.students.length,
-        totalTeacherStudents: allTeacherStudents.students.length,
-      },
-    };
-
-    res.json(response);
-  } catch (error) {
-    console.error("Error in getCourseDetails:", error);
-    res.status(500).json({ error: error.message });
+  } finally {
+    session.endSession();
   }
 };
 
 module.exports = {
+  getTeacherCourses,
+  getCourseById,
   createCourse,
   updateCourse,
-  getCourse,
-  getAllCourses,
-  getCourseDetails,
+  deleteCourse,
 };
