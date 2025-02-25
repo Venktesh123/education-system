@@ -65,6 +65,62 @@ const formatCourseData = (course) => {
 };
 
 // Get all courses for logged-in teacher
+// const getTeacherCourses = async function (req, res) {
+//   try {
+//     // Find teacher using the user ID from token
+//     const teacher = await Teacher.findOne({ user: req.user.id }).populate({
+//       path: "user",
+//       select: "name email role", // Get basic user info
+//     });
+
+//     if (!teacher) {
+//       return res.status(404).json({ error: "Teacher not found" });
+//     }
+
+//     // Get all students for this teacher using virtual populate
+//     await teacher.populate({
+//       path: "students", // Virtual field defined in teacherSchema
+//       populate: {
+//         path: "user",
+//         select: "name email", // Include basic user details for students
+//       },
+//     });
+
+//     // Get all courses with populated fields
+//     const courses = await Course.find({ teacher: teacher._id })
+//       .populate("semester")
+//       .populate("outcomes")
+//       .populate("schedule")
+//       .populate("syllabus")
+//       .populate("weeklyPlan")
+//       .populate("creditPoints")
+//       .sort({ createdAt: -1 });
+
+//     // Format response with teacher and students data
+//     const formattedCourses = courses.map((course) => formatCourseData(course));
+
+//     // Return formatted data with teacher and students information
+//     res.json({
+//       teacher: {
+//         _id: teacher._id,
+//         name: teacher.user?.name,
+//         email: teacher.email, // Using the email field from Teacher model
+//         totalStudents: teacher.students?.length || 0,
+//       },
+//       students:
+//         teacher.students?.map((student) => ({
+//           _id: student._id,
+//           name: student.user?.name,
+//           email: student.user?.email,
+//           teacherEmail: student.teacherEmail, // Include teacherEmail from Student model
+//         })) || [],
+//       courses: formattedCourses,
+//     });
+//   } catch (error) {
+//     res.status(500).json({ error: error.message });
+//   }
+// };
+
 const getTeacherCourses = async function (req, res) {
   try {
     // Find teacher using the user ID from token
@@ -86,35 +142,41 @@ const getTeacherCourses = async function (req, res) {
       },
     });
 
-    // Get all courses with populated fields
+    // Get courses with title and semester info
     const courses = await Course.find({ teacher: teacher._id })
-      .populate("semester")
-      .populate("outcomes")
-      .populate("schedule")
-      .populate("syllabus")
-      .populate("weeklyPlan")
-      .populate("creditPoints")
+      .select("_id title aboutCourse")
+      .populate("semester", "name startDate endDate") // Include semester details
       .sort({ createdAt: -1 });
 
-    // Format response with teacher and students data
-    const formattedCourses = courses.map((course) => formatCourseData(course));
-
-    // Return formatted data with teacher and students information
+    // Return teacher overview with students and course basic info
     res.json({
       teacher: {
         _id: teacher._id,
         name: teacher.user?.name,
-        email: teacher.email, // Using the email field from Teacher model
+        email: teacher.email,
         totalStudents: teacher.students?.length || 0,
+        totalCourses: courses.length || 0,
       },
       students:
         teacher.students?.map((student) => ({
           _id: student._id,
           name: student.user?.name,
           email: student.user?.email,
-          teacherEmail: student.teacherEmail, // Include teacherEmail from Student model
+          teacherEmail: student.teacherEmail,
         })) || [],
-      courses: formattedCourses,
+      courses: courses.map((course) => ({
+        _id: course._id,
+        title: course.title,
+        aboutCourse: course.aboutCourse,
+        semester: course.semester
+          ? {
+              _id: course.semester._id,
+              name: course.semester.name,
+              startDate: course.semester.startDate,
+              endDate: course.semester.endDate,
+            }
+          : null,
+      })),
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -124,7 +186,7 @@ const getTeacherCourses = async function (req, res) {
 // Get specific course by ID
 const getCourseById = async function (req, res) {
   try {
-    const teacher = await Teacher.findOne({ user: req.user.userId });
+    const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
       return res.status(404).json({ error: "Teacher not found" });
     }
