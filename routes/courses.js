@@ -11,7 +11,7 @@ const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
 // Get all courses for teacher
-router.get("/courses", auth, checkRole(["teacher"]), getTeacherCourses);
+router.get("/", auth, getTeacherCourses);
 
 // Get specific course by ID
 router.get("/courses/:courseId", auth, checkRole(["teacher"]), getCourseById);
