@@ -5,10 +5,19 @@ const CourseSchedule = require("../models/CourseSchedule");
 const CourseSyllabus = require("../models/CourseSyllabus");
 const WeeklyPlan = require("../models/WeeklyPlan");
 const CreditPoints = require("../models/CreditPoints");
+const CourseAttendance = require("../models/CourseAttendance");
 const mongoose = require("mongoose");
 
 // Helper function to format course data
 const formatCourseData = (course) => {
+  // Convert Map to object for attendance sessions
+  const attendanceSessions = {};
+  if (course.attendance && course.attendance.sessions) {
+    for (const [key, value] of course.attendance.sessions.entries()) {
+      attendanceSessions[key] = value;
+    }
+  }
+
   return {
     _id: course._id,
     title: course.title,
@@ -61,65 +70,11 @@ const formatCourseData = (course) => {
           classDaysAndTimes: [],
         },
     lectures: course.lectures || [],
+    attendance: {
+      sessions: attendanceSessions,
+    },
   };
 };
-
-// Get all courses for logged-in teacher
-// const getTeacherCourses = async function (req, res) {
-//   try {
-//     // Find teacher using the user ID from token
-//     const teacher = await Teacher.findOne({ user: req.user.id }).populate({
-//       path: "user",
-//       select: "name email role", // Get basic user info
-//     });
-
-//     if (!teacher) {
-//       return res.status(404).json({ error: "Teacher not found" });
-//     }
-
-//     // Get all students for this teacher using virtual populate
-//     await teacher.populate({
-//       path: "students", // Virtual field defined in teacherSchema
-//       populate: {
-//         path: "user",
-//         select: "name email", // Include basic user details for students
-//       },
-//     });
-
-//     // Get all courses with populated fields
-//     const courses = await Course.find({ teacher: teacher._id })
-//       .populate("semester")
-//       .populate("outcomes")
-//       .populate("schedule")
-//       .populate("syllabus")
-//       .populate("weeklyPlan")
-//       .populate("creditPoints")
-//       .sort({ createdAt: -1 });
-
-//     // Format response with teacher and students data
-//     const formattedCourses = courses.map((course) => formatCourseData(course));
-
-//     // Return formatted data with teacher and students information
-//     res.json({
-//       teacher: {
-//         _id: teacher._id,
-//         name: teacher.user?.name,
-//         email: teacher.email, // Using the email field from Teacher model
-//         totalStudents: teacher.students?.length || 0,
-//       },
-//       students:
-//         teacher.students?.map((student) => ({
-//           _id: student._id,
-//           name: student.user?.name,
-//           email: student.user?.email,
-//           teacherEmail: student.teacherEmail, // Include teacherEmail from Student model
-//         })) || [],
-//       courses: formattedCourses,
-//     });
-//   } catch (error) {
-//     res.status(500).json({ error: error.message });
-//   }
-// };
 
 const getTeacherCourses = async function (req, res) {
   try {
@@ -200,7 +155,8 @@ const getCourseById = async function (req, res) {
       .populate("schedule")
       .populate("syllabus")
       .populate("weeklyPlan")
-      .populate("creditPoints");
+      .populate("creditPoints")
+      .populate("attendance");
 
     if (!course) {
       return res.status(404).json({ error: "Course not found" });
@@ -216,9 +172,12 @@ const getCourseById = async function (req, res) {
 // Create new course
 const createCourse = async function (req, res) {
   const session = await mongoose.startSession();
-  session.startTransaction();
+  let transactionStarted = false;
 
   try {
+    session.startTransaction();
+    transactionStarted = true;
+
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
       throw new Error("Teacher not found");
@@ -301,6 +260,23 @@ const createCourse = async function (req, res) {
       course.creditPoints = creditPoints[0]._id;
     }
 
+    // Create attendance if provided
+    if (req.body.attendance && req.body.attendance.sessions) {
+      // Convert object to Map for MongoDB
+      const sessionsMap = new Map(Object.entries(req.body.attendance.sessions));
+
+      const attendance = await CourseAttendance.create(
+        [
+          {
+            sessions: sessionsMap,
+            course: course._id,
+          },
+        ],
+        { session }
+      );
+      course.attendance = attendance[0]._id;
+    }
+
     // Save updated course with all references
     await course.save({ session });
 
@@ -309,6 +285,7 @@ const createCourse = async function (req, res) {
     await teacher.save({ session });
 
     await session.commitTransaction();
+    transactionStarted = false;
 
     // Get the fully populated course
     const createdCourse = await Course.findById(course._id)
@@ -317,12 +294,19 @@ const createCourse = async function (req, res) {
       .populate("schedule")
       .populate("syllabus")
       .populate("weeklyPlan")
-      .populate("creditPoints");
+      .populate("creditPoints")
+      .populate("attendance");
 
     const formattedCourse = formatCourseData(createdCourse);
     res.status(201).json(formattedCourse);
   } catch (error) {
-    await session.abortTransaction();
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
     res.status(400).json({ error: error.message });
   } finally {
     session.endSession();
@@ -332,10 +316,13 @@ const createCourse = async function (req, res) {
 // Update course
 const updateCourse = async function (req, res) {
   const session = await mongoose.startSession();
-  session.startTransaction();
+  let transactionStarted = false;
 
   try {
-    const teacher = await Teacher.findOne({ user: req.user.userId });
+    session.startTransaction();
+    transactionStarted = true;
+
+    const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
       throw new Error("Teacher not found");
     }
@@ -472,7 +459,34 @@ const updateCourse = async function (req, res) {
       }
     }
 
+    // Update attendance
+    if (req.body.attendance && req.body.attendance.sessions) {
+      // Convert object to Map for MongoDB
+      const sessionsMap = new Map(Object.entries(req.body.attendance.sessions));
+
+      if (course.attendance) {
+        await CourseAttendance.findByIdAndUpdate(
+          course.attendance,
+          { sessions: sessionsMap },
+          { session }
+        );
+      } else {
+        const attendance = await CourseAttendance.create(
+          [
+            {
+              sessions: sessionsMap,
+              course: course._id,
+            },
+          ],
+          { session }
+        );
+        course.attendance = attendance[0]._id;
+        await course.save({ session });
+      }
+    }
+
     await session.commitTransaction();
+    transactionStarted = false;
 
     // Get updated course with all populated fields
     const updatedCourse = await Course.findById(course._id)
@@ -481,12 +495,19 @@ const updateCourse = async function (req, res) {
       .populate("schedule")
       .populate("syllabus")
       .populate("weeklyPlan")
-      .populate("creditPoints");
+      .populate("creditPoints")
+      .populate("attendance");
 
     const formattedCourse = formatCourseData(updatedCourse);
     res.json(formattedCourse);
   } catch (error) {
-    await session.abortTransaction();
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
     res.status(400).json({ error: error.message });
   } finally {
     session.endSession();
@@ -496,10 +517,13 @@ const updateCourse = async function (req, res) {
 // Delete course and all related data
 const deleteCourse = async function (req, res) {
   const session = await mongoose.startSession();
-  session.startTransaction();
+  let transactionStarted = false;
 
   try {
-    const teacher = await Teacher.findOne({ user: req.user.userId });
+    session.startTransaction();
+    transactionStarted = true;
+
+    const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
       throw new Error("Teacher not found");
     }
@@ -534,6 +558,10 @@ const deleteCourse = async function (req, res) {
       await CreditPoints.findByIdAndDelete(course.creditPoints, { session });
     }
 
+    if (course.attendance) {
+      await CourseAttendance.findByIdAndDelete(course.attendance, { session });
+    }
+
     // Remove course from teacher's courses
     teacher.courses = teacher.courses.filter((id) => !id.equals(course._id));
     await teacher.save({ session });
@@ -542,9 +570,101 @@ const deleteCourse = async function (req, res) {
     await Course.findByIdAndDelete(course._id, { session });
 
     await session.commitTransaction();
+    transactionStarted = false;
+
     res.json({ message: "Course deleted successfully" });
   } catch (error) {
-    await session.abortTransaction();
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    res.status(400).json({ error: error.message });
+  } finally {
+    session.endSession();
+  }
+};
+
+// Update attendance only
+const updateCourseAttendance = async function (req, res) {
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    session.startTransaction();
+    transactionStarted = true;
+
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      throw new Error("Teacher not found");
+    }
+
+    const course = await Course.findOne({
+      _id: req.params.courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      throw new Error("Course not found");
+    }
+
+    if (req.body.sessions) {
+      // Convert object to Map for MongoDB
+      const sessionsMap = new Map(Object.entries(req.body.sessions));
+
+      if (course.attendance) {
+        await CourseAttendance.findByIdAndUpdate(
+          course.attendance,
+          { sessions: sessionsMap },
+          { session }
+        );
+      } else {
+        const attendance = await CourseAttendance.create(
+          [
+            {
+              sessions: sessionsMap,
+              course: course._id,
+            },
+          ],
+          { session }
+        );
+        course.attendance = attendance[0]._id;
+        await course.save({ session });
+      }
+    }
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    // Get updated course attendance
+    const updatedCourse = await Course.findById(course._id).populate(
+      "attendance"
+    );
+
+    // Format attendance for response
+    const attendanceSessions = {};
+    if (updatedCourse.attendance && updatedCourse.attendance.sessions) {
+      for (const [key, value] of updatedCourse.attendance.sessions.entries()) {
+        attendanceSessions[key] = value;
+      }
+    }
+
+    res.json({
+      _id: updatedCourse._id,
+      attendance: {
+        sessions: attendanceSessions,
+      },
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
     res.status(400).json({ error: error.message });
   } finally {
     session.endSession();
@@ -557,4 +677,5 @@ module.exports = {
   createCourse,
   updateCourse,
   deleteCourse,
+  updateCourseAttendance,
 };

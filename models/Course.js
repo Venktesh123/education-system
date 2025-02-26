@@ -49,6 +49,10 @@ const courseSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "CreditPoints",
     },
+    attendance: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CourseAttendance",
+    },
   },
   { timestamps: true }
 );
