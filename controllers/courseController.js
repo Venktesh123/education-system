@@ -180,31 +180,43 @@ const getCourseById = async function (req, res) {
     // Format the course data
     const formattedCourse = formatCourseData(course);
 
-    // Format students data
+    // Format students data to match initialCourseData format
     const students =
-      teacher.students?.map((student) => ({
-        _id: student._id,
-        name: student.user?.name,
-        email: student.user?.email,
-        teacherEmail: student.teacherEmail,
+      teacher.students?.map((student, index) => ({
+        id: student._id.toString(),
+        rollNo: `CS${String(index + 101).padStart(3, "0")}`, // Generate roll numbers
+        name: student.user?.name || "Unknown",
+        program: "Computer Science", // Default program
+        email: student.user?.email || "",
       })) || [];
 
-    // Include course and students in the response
-    res.json({
-      course: formattedCourse,
+    // Structure the response to match initialCourseData format
+    const response = {
+      _id: formattedCourse._id,
+      title: formattedCourse.title,
+      aboutCourse: formattedCourse.aboutCourse,
+      semester: formattedCourse.semester,
       teacher: {
         _id: teacher._id,
         name: teacher.user?.name,
         email: teacher.email,
         totalStudents: students.length,
       },
+      creditPoints: formattedCourse.creditPoints,
+      learningOutcomes: formattedCourse.learningOutcomes,
+      weeklyPlan: formattedCourse.weeklyPlan,
+      syllabus: formattedCourse.syllabus,
+      courseSchedule: formattedCourse.courseSchedule,
+      attendance: formattedCourse.attendance,
       students: students,
-    });
+      lectures: formattedCourse.lectures,
+    };
+
+    res.json(response);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
-
 // Create new course
 const createCourse = async function (req, res) {
   const session = await mongoose.startSession();
