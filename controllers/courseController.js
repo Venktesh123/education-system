@@ -112,13 +112,13 @@ const getTeacherCourses = async function (req, res) {
         totalStudents: teacher.students?.length || 0,
         totalCourses: courses.length || 0,
       },
-      students:
-        teacher.students?.map((student) => ({
-          _id: student._id,
-          name: student.user?.name,
-          email: student.user?.email,
-          teacherEmail: student.teacherEmail,
-        })) || [],
+      // students:
+      //   teacher.students?.map((student) => ({
+      //     _id: student._id,
+      //     name: student.user?.name,
+      //     email: student.user?.email,
+      //     teacherEmail: student.teacherEmail,
+      //   })) || [],
       courses: courses.map((course) => ({
         _id: course._id,
         title: course.title,
@@ -141,11 +141,26 @@ const getTeacherCourses = async function (req, res) {
 // Get specific course by ID
 const getCourseById = async function (req, res) {
   try {
-    const teacher = await Teacher.findOne({ user: req.user.id });
+    // Find teacher with user ID and populate basic user info
+    const teacher = await Teacher.findOne({ user: req.user.id }).populate({
+      path: "user",
+      select: "name email role", // Get basic user info
+    });
+
     if (!teacher) {
       return res.status(404).json({ error: "Teacher not found" });
     }
 
+    // Populate teacher's students
+    await teacher.populate({
+      path: "students", // Virtual field defined in teacherSchema
+      populate: {
+        path: "user",
+        select: "name email", // Include basic user details for students
+      },
+    });
+
+    // Find the course
     const course = await Course.findOne({
       _id: req.params.courseId,
       teacher: teacher._id,
@@ -162,8 +177,29 @@ const getCourseById = async function (req, res) {
       return res.status(404).json({ error: "Course not found" });
     }
 
+    // Format the course data
     const formattedCourse = formatCourseData(course);
-    res.json(formattedCourse);
+
+    // Format students data
+    const students =
+      teacher.students?.map((student) => ({
+        _id: student._id,
+        name: student.user?.name,
+        email: student.user?.email,
+        teacherEmail: student.teacherEmail,
+      })) || [];
+
+    // Include course and students in the response
+    res.json({
+      course: formattedCourse,
+      teacher: {
+        _id: teacher._id,
+        name: teacher.user?.name,
+        email: teacher.email,
+        totalStudents: students.length,
+      },
+      students: students,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
