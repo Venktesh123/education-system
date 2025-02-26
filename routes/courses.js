@@ -14,15 +14,15 @@ const { checkRole } = require("../middleware/roleCheck");
 router.get("/", auth, getTeacherCourses);
 
 // Get specific course by ID
-router.get("/courses/:courseId", auth, checkRole(["teacher"]), getCourseById);
+router.get("/:courseId", auth, checkRole(["teacher"]), getCourseById);
 
 // Create new course
 router.post("/", auth, checkRole(["teacher"]), createCourse);
 
 // Update course
-router.put("/courses/:courseId", auth, checkRole(["teacher"]), updateCourse);
+router.put("/:courseId", auth, checkRole(["teacher"]), updateCourse);
 
 // Delete course
-router.delete("/courses/:courseId", auth, checkRole(["teacher"]), deleteCourse);
+router.delete("/:courseId", auth, checkRole(["teacher"]), deleteCourse);
 
 module.exports = router;
