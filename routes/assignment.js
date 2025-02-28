@@ -27,5 +27,19 @@ router.post(
   checkRole(["teacher"]),
   assignmentController.gradeSubmission
 );
+// Get all assignments for a course
+router.get(
+  "/courses/:courseId/assignments",
+  auth,
+  checkRole(["teacher", "student"]),
+  assignmentController.getCourseAssignments
+);
 
+// Get a specific assignment
+router.get(
+  "/assignments/:assignmentId",
+  auth,
+  checkRole(["teacher", "student"]),
+  assignmentController.getAssignmentById
+);
 module.exports = router;
