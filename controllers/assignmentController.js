@@ -371,3 +371,101 @@ exports.gradeSubmission = catchAsyncErrors(async (req, res, next) => {
     session.endSession();
   }
 });
+// Get all assignments for a course
+exports.getCourseAssignments = catchAsyncErrors(async (req, res, next) => {
+  try {
+    // Get the course ID from request parameters
+    const { courseId } = req.params;
+
+    // Find the course
+    const course = await Course.findById(courseId);
+    if (!course) {
+      return next(new ErrorHandler("Course not found", 404));
+    }
+
+    // Verify that the user has access to this course
+    if (req.user.role === "teacher") {
+      const teacher = await Teacher.findOne({ user: req.user.id });
+      if (!teacher || !course.teacher.equals(teacher._id)) {
+        return next(new ErrorHandler("Unauthorized access", 403));
+      }
+    } else if (req.user.role === "student") {
+      const student = await Student.findOne({ user: req.user.id });
+      if (!student || !student.courses.some((id) => id.equals(course._id))) {
+        return next(new ErrorHandler("Unauthorized access", 403));
+      }
+    }
+
+    // Find all assignments for this course
+    const assignments = await Assignment.find({ course: courseId }).sort({
+      dueDate: 1,
+    });
+
+    // Filter submissions for students (they should only see their own)
+    if (req.user.role === "student") {
+      const student = await Student.findOne({ user: req.user.id });
+
+      assignments.forEach((assignment) => {
+        assignment.submissions = assignment.submissions.filter((submission) =>
+          submission.student.equals(student._id)
+        );
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      assignments,
+    });
+  } catch (error) {
+    return next(new ErrorHandler(error.message, 500));
+  }
+});
+
+// Get a specific assignment by ID
+exports.getAssignmentById = catchAsyncErrors(async (req, res, next) => {
+  try {
+    const { assignmentId } = req.params;
+
+    // Find the assignment with course information
+    const assignment = await Assignment.findById(assignmentId).populate(
+      "course",
+      "title"
+    );
+
+    if (!assignment) {
+      return next(new ErrorHandler("Assignment not found", 404));
+    }
+
+    // Verify that the user has access to this assignment's course
+    if (req.user.role === "teacher") {
+      const teacher = await Teacher.findOne({ user: req.user.id });
+      const course = await Course.findById(assignment.course);
+
+      if (!teacher || !course.teacher.equals(teacher._id)) {
+        return next(new ErrorHandler("Unauthorized access", 403));
+      }
+    } else if (req.user.role === "student") {
+      const student = await Student.findOne({ user: req.user.id });
+
+      // Check if student is enrolled in the course
+      if (
+        !student ||
+        !student.courses.some((id) => id.equals(assignment.course._id))
+      ) {
+        return next(new ErrorHandler("Unauthorized access", 403));
+      }
+
+      // Students should only see their own submissions
+      assignment.submissions = assignment.submissions.filter((submission) =>
+        submission.student.equals(student._id)
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      assignment,
+    });
+  } catch (error) {
+    return next(new ErrorHandler(error.message, 500));
+  }
+});
