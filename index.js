@@ -1,15 +1,27 @@
 const express = require("express");
 const cors = require("cors");
 const connectDB = require("./config/database");
+
 require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+app.use(express.urlencoded({ extended: true }));
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+const fileUpload = require("express-fileupload");
 
+app.use(
+  fileUpload({
+    useTempFiles: true,
+    tempFileDir: "/tmp/",
+    createParentPath: true,
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max file size
+    debug: true, // Set to true temporarily to see detailed debug info
+  })
+);
 // MongoDB Connection
 connectDB();
 
@@ -25,6 +37,7 @@ app.use("/api/semesters", require("./routes/semester"));
 app.use("/api/students", require("./routes/students"));
 app.use("/api/teachers", require("./routes/teachers"));
 app.use("/api/events", require("./routes/event"));
+app.use("/api/assignment", require("./routes/assignment"));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
