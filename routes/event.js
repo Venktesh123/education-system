@@ -7,7 +7,6 @@ const { checkRole } = require("../middleware/roleCheck");
 const eventController = require("../controllers/eventController");
 
 // Routes
-console.log("datta");
 router.post("/", auth, checkRole(["admin"]), eventController.createEvent);
 router.get("/", auth, eventController.getAllEvents);
 router.get("/:id", auth, eventController.getEventById);
