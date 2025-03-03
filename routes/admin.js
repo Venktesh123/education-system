@@ -3,27 +3,19 @@ const router = express.Router();
 const adminController = require("../controllers/adminController");
 const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
-const upload = require("../middleware/upload");
+const uploadMiddleware = require("../middleware/upload");
 
-// Add test route to verify router is working
+// Test route to verify router is working
 router.get("/test", (req, res) => {
   res.json({ message: "Auth routes working" });
 });
 
-// Add file upload route with auth and role check
+// Simplified file upload route for testing
 router.post(
   "/upload-users",
   auth,
   checkRole(["admin"]),
-  (req, res, next) => {
-    upload.single("file")(req, res, (err) => {
-      if (err) {
-        console.error("Upload error:", err);
-        return res.status(400).json({ error: err.message });
-      }
-      next();
-    });
-  },
+  uploadMiddleware, // Now a direct middleware, not a factory function
   adminController.uploadUsers
 );
 

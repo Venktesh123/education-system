@@ -5,6 +5,7 @@ const Student = require("../models/Student");
 
 const uploadUsers = async (req, res) => {
   const session = await User.startSession();
+  console.log("Processing user upload");
 
   try {
     if (!req.file?.path) {
@@ -14,71 +15,88 @@ const uploadUsers = async (req, res) => {
     }
 
     const users = await parseExcelFile(req.file.path);
-    const createdUsers = [];
+    const createdUsers = {};
+    const userIds = [];
 
     await session.withTransaction(async () => {
       // Process teachers first
       const teacherData = users.filter((user) => user.role === "teacher");
       const teacherMap = new Map();
 
+      // Create teachers
       for (const userData of teacherData) {
-        const existingUser = await User.findOne({
-          email: userData.email.toLowerCase(),
-        }).session(session);
+        const email = userData.email.toLowerCase();
 
+        const existingUser = await User.findOne({ email }).session(session);
         if (existingUser) {
-          throw new Error(`User with email ${userData.email} already exists`);
+          throw new Error(`User with email ${email} already exists`);
         }
 
+        // Create user document
         const user = new User({
           ...userData,
-          email: userData.email.toLowerCase(),
+          email: email,
         });
         await user.save({ session });
 
+        // Create teacher document
         const teacher = new Teacher({
           user: user._id,
-          email: userData.email.toLowerCase(),
+          email: email,
           courses: [],
         });
         await teacher.save({ session });
 
-        teacherMap.set(userData.email.toLowerCase(), teacher);
-        createdUsers.push(user);
+        // Store in map for quick lookup when processing students
+        teacherMap.set(email, teacher);
+
+        // Store user data indexed by email for easy lookup
+        createdUsers[email] = {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          role: user.role,
+          createdAt: user.createdAt,
+        };
+
+        userIds.push(user._id);
       }
 
       // Process students
       const studentData = users.filter((user) => user.role === "student");
 
       for (const userData of studentData) {
-        const existingUser = await User.findOne({
-          email: userData.email.toLowerCase(),
-        }).session(session);
+        const email = userData.email.toLowerCase();
+        const teacherEmail = userData.teacherEmail.toLowerCase();
 
+        // Check if user already exists
+        const existingUser = await User.findOne({ email }).session(session);
         if (existingUser) {
-          throw new Error(`User with email ${userData.email} already exists`);
+          throw new Error(`User with email ${email} already exists`);
         }
 
-        let teacher = teacherMap.get(userData.teacherEmail.toLowerCase());
-
+        // Find the teacher
+        let teacher = teacherMap.get(teacherEmail);
         if (!teacher) {
-          teacher = await Teacher.findOne({
-            email: userData.teacherEmail.toLowerCase(),
-          }).session(session);
-
+          teacher = await Teacher.findOne({ email: teacherEmail }).session(
+            session
+          );
           if (!teacher) {
             throw new Error(
-              `Teacher with email ${userData.teacherEmail} not found for student: ${userData.email}`
+              `Teacher with email ${teacherEmail} not found for student: ${email}`
             );
           }
         }
 
+        // Create user document
         const user = new User({
           ...userData,
-          email: userData.email.toLowerCase(),
+          email: email,
         });
         await user.save({ session });
 
+        // Create student document
         const student = new Student({
           user: user._id,
           teacher: teacher._id,
@@ -87,7 +105,18 @@ const uploadUsers = async (req, res) => {
         });
         await student.save({ session });
 
-        createdUsers.push(user);
+        // Store user data indexed by email for easy lookup
+        createdUsers[email] = {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          role: user.role,
+          createdAt: user.createdAt,
+          teacherEmail: teacher.email,
+        };
+
+        userIds.push(user._id);
       }
     });
 
@@ -95,7 +124,8 @@ const uploadUsers = async (req, res) => {
 
     return res.status(201).json({
       message: "Users created successfully",
-      count: createdUsers.length,
+      count: userIds.length,
+      userIds: userIds,
       users: createdUsers,
     });
   } catch (error) {
@@ -109,7 +139,6 @@ const uploadUsers = async (req, res) => {
   }
 };
 
-// Make sure to export the function with this exact name
 module.exports = {
   uploadUsers,
 };
