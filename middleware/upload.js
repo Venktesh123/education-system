@@ -1,15 +1,6 @@
-const path = require("path");
-const fs = require("fs");
+const XLSX = require("xlsx");
 
-// Define upload directory
-const uploadDir = path.join(__dirname, "../uploads");
-
-// Create directory if it doesn't exist
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// This middleware processes the already uploaded file
+// This middleware processes the Excel file directly from memory
 module.exports = (req, res, next) => {
   console.log("Processing uploaded file...");
 
@@ -36,8 +27,7 @@ module.exports = (req, res, next) => {
       mimetype: uploadedFile.mimetype,
     });
 
-    // Check for valid Excel file based on BOTH extension AND mimetype
-    const validExtensions = [".xlsx", ".xls", ".lsx"];
+    // Check for valid Excel file based on mimetype
     const validMimetypes = [
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.ms-excel",
@@ -45,8 +35,9 @@ module.exports = (req, res, next) => {
       "application/x-excel",
     ];
 
-    const fileExtension = path.extname(uploadedFile.name).toLowerCase();
-    const isValidExtension = validExtensions.includes(fileExtension);
+    // Check file extension too
+    const fileExtension = uploadedFile.name.split(".").pop().toLowerCase();
+    const isValidExtension = ["xlsx", "xls", "lsx"].includes(fileExtension);
     const isValidMimetype = validMimetypes.includes(uploadedFile.mimetype);
 
     // Accept file if EITHER extension OR mimetype is valid Excel
@@ -56,42 +47,52 @@ module.exports = (req, res, next) => {
         details: {
           extension: fileExtension,
           mimetype: uploadedFile.mimetype,
-          validExtensions: validExtensions.join(", "),
-          validMimetypes: validMimetypes.join(", "),
         },
       });
     }
 
-    // Move file to uploads directory
-    const fileName = `${Date.now()}-${uploadedFile.name.replace(
-      /[^a-zA-Z0-9.-]/g,
-      "_"
-    )}`;
-    const filePath = path.join(uploadDir, fileName);
+    // Process the Excel data directly from memory
+    try {
+      // Create a workbook from the data buffer
+      const workbook = XLSX.read(uploadedFile.data, { type: "buffer" });
 
-    uploadedFile.mv(filePath, (err) => {
-      if (err) {
-        console.error("Error moving file:", err);
-        return res
-          .status(500)
-          .json({ error: "Error saving file", details: err.message });
-      }
+      // Get the first sheet name
+      const firstSheetName = workbook.SheetNames[0];
 
-      // Create file object with multer-compatible format
+      // Get the worksheet
+      const worksheet = workbook.Sheets[firstSheetName];
+
+      // Convert the worksheet to JSON
+      const excelData = XLSX.utils.sheet_to_json(worksheet);
+
+      // Create a req.excelData property with the parsed data
+      req.excelData = excelData;
+
+      // Create a mock file object for compatibility with existing code
       req.file = {
         fieldname: "file",
         originalname: uploadedFile.name,
         encoding: "utf8",
         mimetype: uploadedFile.mimetype,
         size: uploadedFile.size,
-        destination: uploadDir,
-        filename: fileName,
-        path: filePath,
+        // Instead of a physical path, provide the data in memory
+        inMemory: true,
+        excelData: excelData,
       };
 
-      console.log("File successfully saved to", filePath);
+      console.log(
+        "Excel data extracted successfully:",
+        excelData.length,
+        "rows"
+      );
       next();
-    });
+    } catch (excelError) {
+      console.error("Error parsing Excel data:", excelError);
+      return res.status(400).json({
+        error: "Failed to parse Excel file",
+        details: excelError.message,
+      });
+    }
   } catch (error) {
     console.error("File processing error:", error);
     return res.status(500).json({

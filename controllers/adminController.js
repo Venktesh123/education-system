@@ -1,32 +1,36 @@
-const { parseExcelFile } = require("../utils/excelParser");
 const User = require("../models/User");
 const Teacher = require("../models/Teacher");
 const Student = require("../models/Student");
 
 const uploadUsers = async (req, res) => {
   const session = await User.startSession();
-  console.log("Processing user upload");
+  console.log("Processing user upload from in-memory data");
 
   try {
-    if (!req.file?.path) {
+    // Get the Excel data that was parsed in the middleware
+    if (
+      !req.excelData ||
+      !Array.isArray(req.excelData) ||
+      req.excelData.length === 0
+    ) {
       return res.status(400).json({
-        error: "Please upload a valid Excel file",
+        error: "No valid data found in the Excel file",
       });
     }
 
-    const users = await parseExcelFile(req.file.path);
-    const createdUsers = {};
-    const userIds = [];
+    const users = req.excelData;
+    const results = [];
+    const teacherMap = new Map();
 
     await session.withTransaction(async () => {
       // Process teachers first
       const teacherData = users.filter((user) => user.role === "teacher");
-      const teacherMap = new Map();
 
-      // Create teachers
+      // Process each teacher individually
       for (const userData of teacherData) {
         const email = userData.email.toLowerCase();
 
+        // Check if user already exists
         const existingUser = await User.findOne({ email }).session(session);
         if (existingUser) {
           throw new Error(`User with email ${email} already exists`);
@@ -50,17 +54,13 @@ const uploadUsers = async (req, res) => {
         // Store in map for quick lookup when processing students
         teacherMap.set(email, teacher);
 
-        // Store user data indexed by email for easy lookup
-        createdUsers[email] = {
-          _id: user._id,
-          firstName: user.firstName,
-          lastName: user.lastName,
+        // Add to results
+        results.push({
+          _id: user._id.toString(),
           email: user.email,
           role: user.role,
           createdAt: user.createdAt,
-        };
-
-        userIds.push(user._id);
+        });
       }
 
       // Process students
@@ -105,29 +105,21 @@ const uploadUsers = async (req, res) => {
         });
         await student.save({ session });
 
-        // Store user data indexed by email for easy lookup
-        createdUsers[email] = {
-          _id: user._id,
-          firstName: user.firstName,
-          lastName: user.lastName,
+        // Add to results
+        results.push({
+          _id: user._id.toString(),
           email: user.email,
           role: user.role,
           createdAt: user.createdAt,
           teacherEmail: teacher.email,
-        };
-
-        userIds.push(user._id);
+        });
       }
     });
 
     await session.endSession();
 
-    return res.status(201).json({
-      message: "Users created successfully",
-      count: userIds.length,
-      userIds: userIds,
-      users: createdUsers,
-    });
+    // Return results as array
+    return res.status(201).json(results);
   } catch (error) {
     await session.endSession();
     console.error("Upload error:", error);

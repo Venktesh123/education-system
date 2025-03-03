@@ -19,20 +19,19 @@ const fileUpload = require("express-fileupload");
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 
-// IMPORTANT: Configure express-fileupload GLOBALLY rather than per-route
-// This prevents multiple instances from conflicting
+// Configure express-fileupload globally to handle file uploads
+// This keeps the file in memory rather than writing to disk
 app.use(
   fileUpload({
-    useTempFiles: true,
-    tempFileDir: path.join(__dirname, "tmp"),
     createParentPath: true,
     limits: {
       fileSize: 10 * 1024 * 1024, // 10MB
     },
     abortOnLimit: true,
+    // Don't use tempFiles - we want to keep everything in memory
+    useTempFiles: false,
+    // Enable debug if needed
     debug: false,
-    safeFileNames: true,
-    preserveExtension: true,
   })
 );
 
