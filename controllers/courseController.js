@@ -247,7 +247,6 @@ const createCourse = async function (req, res) {
     logger.info("Transaction started successfully");
 
     // Find teacher using the logged-in user ID
-    logger.info(`Looking for teacher with user ID: ${req.user.id}`);
     const teacher = await Teacher.findOne({ user: req.user.id }).session(
       session
     );
@@ -256,10 +255,8 @@ const createCourse = async function (req, res) {
       logger.error(`Teacher not found for user ID: ${req.user.id}`);
       throw new Error("Teacher not found");
     }
-    logger.info(`Found teacher: ${teacher._id}`);
 
     // Create main course
-    logger.info(`Creating main course with title: ${req.body.title}`);
     const course = new Course({
       title: req.body.title,
       aboutCourse: req.body.aboutCourse,
@@ -378,8 +375,7 @@ const createCourse = async function (req, res) {
     const students = await Student.find({ teacher: teacher._id }).session(
       session
     );
-    logger.info(`Found ${students.length} students for this teacher`);
-
+    console.log(students, "students");
     // Add course ID to all students' courses arrays
     if (students && students.length > 0) {
       logger.info("Adding course to students' course arrays");
