@@ -608,3 +608,284 @@ exports.getAssignmentById = catchAsyncErrors(async (req, res, next) => {
     return next(new ErrorHandler(error.message, 500));
   }
 });
+exports.updateAssignment = catchAsyncErrors(async (req, res, next) => {
+  console.log("updateAssignment: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+    console.log("Transaction started");
+
+    const { assignmentId } = req.params;
+    console.log(`Updating assignment: ${assignmentId}`);
+
+    // Verify teacher permissions
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      console.log("Teacher not found");
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+    console.log("Teacher found:", teacher._id);
+
+    // Get the assignment
+    const assignment = await Assignment.findById(assignmentId);
+    if (!assignment) {
+      console.log("Assignment not found");
+      return next(new ErrorHandler("Assignment not found", 404));
+    }
+    console.log("Assignment found:", assignment._id);
+
+    // Check if the teacher owns the course
+    const course = await Course.findOne({
+      _id: assignment.course,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      console.log("Teacher not authorized for this course");
+      return next(
+        new ErrorHandler("Unauthorized to update this assignment", 403)
+      );
+    }
+    console.log("Teacher authorized for course:", course._id);
+
+    // Extract update fields
+    const { title, description, dueDate, totalPoints, isActive } = req.body;
+
+    // Update assignment fields if provided
+    if (title) assignment.title = title;
+    if (description) assignment.description = description;
+    if (dueDate) assignment.dueDate = dueDate;
+    if (totalPoints) assignment.totalPoints = totalPoints;
+    if (isActive !== undefined) assignment.isActive = isActive;
+
+    // Handle file uploads if any
+    if (req.files && req.files.attachments) {
+      console.log("Processing new file attachments");
+
+      let attachmentsArray = Array.isArray(req.files.attachments)
+        ? req.files.attachments
+        : [req.files.attachments];
+
+      console.log(`Found ${attachmentsArray.length} new attachments`);
+
+      // Validate file types
+      const allowedTypes = [
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ];
+
+      for (const file of attachmentsArray) {
+        console.log(
+          `Validating file: ${file.name}, type: ${file.mimetype}, size: ${file.size}`
+        );
+
+        if (!allowedTypes.includes(file.mimetype)) {
+          console.log(`Invalid file type: ${file.mimetype}`);
+          return next(
+            new ErrorHandler(
+              `Invalid file type. Allowed types: PDF, JPEG, PNG, DOC, DOCX, XLS, XLSX`,
+              400
+            )
+          );
+        }
+
+        // Validate file size (5MB)
+        if (file.size > 5 * 1024 * 1024) {
+          console.log(`File too large: ${file.size} bytes`);
+          return next(
+            new ErrorHandler(`File too large. Maximum size allowed is 5MB`, 400)
+          );
+        }
+      }
+
+      // Upload new attachments to S3
+      try {
+        console.log("Starting file uploads to S3");
+
+        const uploadPromises = attachmentsArray.map((file) =>
+          uploadFileToS3(file, "assignment-attachments")
+        );
+
+        const uploadedFiles = await Promise.all(uploadPromises);
+        console.log(`Successfully uploaded ${uploadedFiles.length} files`);
+
+        // Handle attachment replacement options
+        const { replaceAttachments } = req.body;
+
+        if (replaceAttachments === "true") {
+          // Replace all existing attachments
+          assignment.attachments = uploadedFiles.map((file) => ({
+            name: file.key.split("/").pop(), // Extract filename from key
+            url: file.url,
+          }));
+          console.log("Replaced all attachments");
+        } else {
+          // Append new attachments to existing ones
+          const newAttachments = uploadedFiles.map((file) => ({
+            name: file.key.split("/").pop(),
+            url: file.url,
+          }));
+
+          assignment.attachments = [
+            ...assignment.attachments,
+            ...newAttachments,
+          ];
+          console.log("Added new attachments to existing ones");
+        }
+      } catch (uploadError) {
+        console.error("Error uploading files:", uploadError);
+        return next(new ErrorHandler("Failed to upload files", 500));
+      }
+    }
+
+    // Remove specific attachments if requested
+    if (req.body.removeAttachments) {
+      const attachmentsToRemove = Array.isArray(req.body.removeAttachments)
+        ? req.body.removeAttachments
+        : [req.body.removeAttachments];
+
+      console.log(`Removing ${attachmentsToRemove.length} attachments`);
+
+      assignment.attachments = assignment.attachments.filter(
+        (attachment) => !attachmentsToRemove.includes(attachment._id.toString())
+      );
+
+      console.log("Attachments removed");
+    }
+
+    console.log("Saving updated assignment");
+    await assignment.save({ session });
+    console.log("Assignment updated successfully");
+
+    console.log("Committing transaction");
+    await session.commitTransaction();
+    transactionStarted = false;
+    console.log("Transaction committed");
+
+    res.status(200).json({
+      success: true,
+      message: "Assignment updated successfully",
+      assignment,
+    });
+  } catch (error) {
+    console.log(`Error in updateAssignment: ${error.message}`);
+
+    if (transactionStarted) {
+      try {
+        console.log("Aborting transaction");
+        await session.abortTransaction();
+        console.log("Transaction aborted");
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    console.log("Ending session");
+    await session.endSession();
+    console.log("Session ended");
+  }
+});
+
+// Delete assignment
+exports.deleteAssignment = catchAsyncErrors(async (req, res, next) => {
+  console.log("deleteAssignment: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+    console.log("Transaction started");
+
+    const { assignmentId } = req.params;
+    console.log(`Deleting assignment: ${assignmentId}`);
+
+    // Verify teacher permissions
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      console.log("Teacher not found");
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+    console.log("Teacher found:", teacher._id);
+
+    // Get the assignment
+    const assignment = await Assignment.findById(assignmentId);
+    if (!assignment) {
+      console.log("Assignment not found");
+      return next(new ErrorHandler("Assignment not found", 404));
+    }
+    console.log("Assignment found:", assignment._id);
+
+    // Get the course and verify ownership
+    const course = await Course.findOne({
+      _id: assignment.course,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      console.log("Teacher not authorized for this course");
+      return next(
+        new ErrorHandler("Unauthorized to delete this assignment", 403)
+      );
+    }
+    console.log("Teacher authorized for course:", course._id);
+
+    // Remove assignment from course
+    console.log("Removing assignment from course");
+    course.assignments = course.assignments.filter(
+      (id) => !id.equals(assignment._id)
+    );
+    await course.save({ session });
+    console.log("Course updated");
+
+    // Delete S3 files if needed (optional in this implementation)
+    // This would require listing and deleting objects with the prefix:
+    // `assignment-attachments/${assignment._id}`
+    // and `assignment-submissions/${assignment._id}`
+    // For brevity, this is left as a comment
+
+    // Delete the assignment
+    console.log("Deleting assignment document");
+    await Assignment.findByIdAndDelete(assignmentId).session(session);
+    console.log("Assignment deleted");
+
+    console.log("Committing transaction");
+    await session.commitTransaction();
+    transactionStarted = false;
+    console.log("Transaction committed");
+
+    res.status(200).json({
+      success: true,
+      message: "Assignment deleted successfully",
+    });
+  } catch (error) {
+    console.log(`Error in deleteAssignment: ${error.message}`);
+
+    if (transactionStarted) {
+      try {
+        console.log("Aborting transaction");
+        await session.abortTransaction();
+        console.log("Transaction aborted");
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    console.log("Ending session");
+    await session.endSession();
+    console.log("Session ended");
+  }
+});
