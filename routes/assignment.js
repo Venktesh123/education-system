@@ -27,6 +27,7 @@ router.post(
   checkRole(["teacher"]),
   assignmentController.gradeSubmission
 );
+
 // Get all assignments for a course
 router.get(
   "/courses/:courseId/assignments",
@@ -42,4 +43,21 @@ router.get(
   checkRole(["teacher", "student"]),
   assignmentController.getAssignmentById
 );
+
+// Update an assignment (teacher only)
+router.put(
+  "/assignments/:assignmentId",
+  auth,
+  checkRole(["teacher"]),
+  assignmentController.updateAssignment
+);
+
+// Delete an assignment (teacher only)
+router.delete(
+  "/assignments/:assignmentId",
+  auth,
+  checkRole(["teacher"]),
+  assignmentController.deleteAssignment
+);
+
 module.exports = router;
