@@ -592,11 +592,19 @@ exports.getAssignmentById = catchAsyncErrors(async (req, res, next) => {
       }
       console.log("Student authorized");
 
-      // Students should only see their own submissions
-      assignment.submissions = assignment.submissions.filter((submission) =>
-        submission.student.equals(student._id)
-      );
-      console.log("Submissions filtered for student");
+      // Replace the student ID with req.user.id in each submission for this student
+      assignment.submissions = assignment.submissions
+        .filter((submission) => submission.student.equals(student._id))
+        .map((submission) => {
+          // Create a new object to avoid modifying the original
+          const modifiedSubmission = {
+            ...submission.toObject(), // Convert to plain object if it's a Mongoose document
+            student: req.user.id, // Replace student field with req.user.id
+          };
+          return modifiedSubmission;
+        });
+
+      console.log("Submissions modified for student");
     }
 
     res.status(200).json({
