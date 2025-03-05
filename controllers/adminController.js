@@ -1,6 +1,8 @@
 const User = require("../models/User");
 const Teacher = require("../models/Teacher");
 const Student = require("../models/Student");
+const { ErrorHandler } = require("../middleware/errorHandler");
+const catchAsyncErrors = require("../middleware/catchAsyncErrors");
 
 const uploadUsers = async (req, res) => {
   const session = await User.startSession();
@@ -130,7 +132,150 @@ const uploadUsers = async (req, res) => {
     });
   }
 };
+const getMyStudents = catchAsyncErrors(async (req, res, next) => {
+  console.log("getMyStudents: Started");
+
+  // Extract user info from JWT token (set by auth middleware)
+  const userId = req.user._id;
+  console.log(`Authenticated user ID: ${userId}`);
+
+  // Find the teacher profile for this user
+  const teacher = await Teacher.findOne({ user: userId });
+  if (!teacher) {
+    console.log("Teacher profile not found for authenticated user");
+    return next(new ErrorHandler("Teacher profile not found", 404));
+  }
+
+  console.log(`Found teacher with ID: ${teacher._id}, Email: ${teacher.email}`);
+
+  // Find all students associated with this teacher
+  const students = await Student.find({ teacher: teacher._id })
+    .populate({
+      path: "user",
+      select: "name email",
+    })
+    .populate({
+      path: "enrolledCourses.course",
+      select: "title description",
+    });
+
+  if (!students || students.length === 0) {
+    console.log("No students found for this teacher");
+    return res.status(200).json({
+      success: true,
+      message: "No students found for this teacher",
+      teacherInfo: {
+        id: teacher._id,
+        email: teacher.email,
+        name: req.user.name,
+      },
+      students: [],
+    });
+  }
+
+  console.log(`Found ${students.length} students for teacher ${teacher.email}`);
+
+  // Format student data
+  const formattedStudents = students.map((student) => ({
+    id: student._id,
+    name: student.user ? student.user.name : "Unknown",
+    email: student.email,
+    program: student.program,
+    semester: student.semester,
+    enrolledCourses: student.enrolledCourses.map((course) => ({
+      courseId: course.course?._id || course.course,
+      courseTitle: course.course?.title || "Unknown Course",
+      status: course.status,
+      enrolledOn: course.enrolledOn,
+    })),
+  }));
+
+  res.status(200).json({
+    success: true,
+    count: students.length,
+    teacherInfo: {
+      id: teacher._id,
+      email: teacher.email,
+      name: req.user.name,
+    },
+    students: formattedStudents,
+  });
+});
+
+// Admin route to get students for any teacher by teacher ID
+const getStudentsByTeacherId = catchAsyncErrors(async (req, res, next) => {
+  console.log("getStudentsByTeacherId: Started");
+
+  const { teacherId } = req.params;
+  console.log(`Getting students for teacher ID: ${teacherId}`);
+
+  // Check if teacher exists
+  const teacher = await Teacher.findById(teacherId).populate({
+    path: "user",
+    select: "name email",
+  });
+
+  if (!teacher) {
+    console.log("Teacher not found");
+    return next(new ErrorHandler("Teacher not found", 404));
+  }
+
+  // Find all students associated with this teacher
+  const students = await Student.find({ teacher: teacherId })
+    .populate({
+      path: "user",
+      select: "name email",
+    })
+    .populate({
+      path: "enrolledCourses.course",
+      select: "title description",
+    });
+
+  if (!students || students.length === 0) {
+    console.log("No students found for this teacher");
+    return res.status(200).json({
+      success: true,
+      message: "No students found for this teacher",
+      teacherInfo: {
+        id: teacher._id,
+        email: teacher.email,
+        name: teacher.user ? teacher.user.name : "Unknown",
+      },
+      students: [],
+    });
+  }
+
+  console.log(`Found ${students.length} students for teacher ${teacher.email}`);
+
+  // Format student data
+  const formattedStudents = students.map((student) => ({
+    id: student._id,
+    name: student.user ? student.user.name : "Unknown",
+    email: student.email,
+    program: student.program,
+    semester: student.semester,
+    enrolledCourses: student.enrolledCourses.map((course) => ({
+      courseId: course.course?._id || course.course,
+      courseTitle: course.course?.title || "Unknown Course",
+      status: course.status,
+      enrolledOn: course.enrolledOn,
+    })),
+  }));
+
+  res.status(200).json({
+    success: true,
+    count: students.length,
+    teacherInfo: {
+      id: teacher._id,
+      email: teacher.email,
+      name: teacher.user ? teacher.user.name : "Unknown",
+    },
+    students: formattedStudents,
+  });
+});
 
 module.exports = {
   uploadUsers,
+  getStudentsByTeacherId,
+  getMyStudents,
 };

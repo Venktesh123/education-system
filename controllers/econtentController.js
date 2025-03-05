@@ -135,7 +135,7 @@ exports.createEContent = catchAsyncErrors(async (req, res, next) => {
     transactionStarted = true;
     console.log("Transaction started");
 
-    const { moduleNumber, moduleTitle } = req.body;
+    const { moduleNumber, moduleTitle, link } = req.body;
     const { courseId } = req.params;
 
     console.log(`Creating EContent for course: ${courseId}`);
@@ -183,6 +183,11 @@ exports.createEContent = catchAsyncErrors(async (req, res, next) => {
         // Update the existing module title if provided
         if (moduleTitle) {
           eContent.modules[existingModuleIndex].moduleTitle = moduleTitle;
+        }
+
+        // Update the link if provided
+        if (link) {
+          eContent.modules[existingModuleIndex].link = link;
         }
 
         // Handle file uploads if any
@@ -237,6 +242,7 @@ exports.createEContent = catchAsyncErrors(async (req, res, next) => {
     const newModule = {
       moduleNumber,
       moduleTitle,
+      link: link || "", // Add the link field with default empty string if not provided
       files: [],
     };
 
@@ -383,7 +389,7 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
     transactionStarted = true;
     console.log("Transaction started");
 
-    const { moduleNumber, moduleTitle } = req.body;
+    const { moduleNumber, moduleTitle, link } = req.body;
     const { courseId, moduleId } = req.params;
 
     console.log(`Updating module ${moduleId} for course: ${courseId}`);
@@ -427,6 +433,11 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
     }
 
     if (moduleTitle) module.moduleTitle = moduleTitle;
+
+    // Update link if provided
+    if (link !== undefined) {
+      module.link = link;
+    }
 
     // Handle file uploads if any
     if (req.files && req.files.files) {
