@@ -18,6 +18,10 @@ const EContentSchema = new mongoose.Schema(
           type: String,
           required: true,
         },
+        link: {
+          type: String,
+          default: "",
+        },
         files: [
           {
             fileType: {
