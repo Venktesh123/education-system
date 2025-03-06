@@ -317,17 +317,13 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
   console.log("updateModule: Started");
   const session = await mongoose.startSession();
   let transactionStarted = false;
-
   try {
     await session.startTransaction();
     transactionStarted = true;
     console.log("Transaction started");
-
     const { moduleNumber, moduleTitle, link } = req.body;
     const { courseId, moduleId } = req.params;
-
     console.log(`Updating module ${moduleId} for course: ${courseId}`);
-
     // Find EContent
     const eContent = await EContent.findOne({ course: courseId }).session(
       session
@@ -336,43 +332,22 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
       console.log(`No EContent found for course: ${courseId}`);
       return next(new ErrorHandler("No EContent found for this course", 404));
     }
-
     // Find specific module
     const module = eContent.modules.id(moduleId);
     if (!module) {
       console.log(`Module not found: ${moduleId}`);
       return next(new ErrorHandler("Module not found", 404));
     }
-
     // Update module details
     if (moduleNumber) {
-      // Check if another module already has this number
-      const duplicateModule = eContent.modules.find(
-        (m) =>
-          m.moduleNumber === Number(moduleNumber) &&
-          m._id.toString() !== moduleId
-      );
-
-      if (duplicateModule) {
-        console.log(`Another module already has number ${moduleNumber}`);
-        return next(
-          new ErrorHandler(
-            `Another module already has number ${moduleNumber}`,
-            400
-          )
-        );
-      }
-
+      // Removed the duplicate module number check
       module.moduleNumber = moduleNumber;
     }
-
     if (moduleTitle) module.moduleTitle = moduleTitle;
-
     // Update link if provided
     if (link !== undefined) {
       module.link = link;
     }
-
     // Handle file uploads if any
     if (req.files && req.files.files) {
       try {
@@ -381,15 +356,12 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
           "application/vnd.ms-powerpoint",
           "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         ];
-
         const { filesArray, uploadedFiles } = await handleFileUploads(
           req.files.files,
           allowedTypes,
           next
         );
-
         const fileObjects = createFileObjects(filesArray, uploadedFiles);
-
         // Add files to the module
         module.files.push(...fileObjects);
         console.log("New files added to module");
@@ -403,16 +375,13 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
         );
       }
     }
-
     console.log("Saving updated eContent");
     await eContent.save({ session });
     console.log("EContent updated");
-
     console.log("Committing transaction");
     await session.commitTransaction();
     transactionStarted = false;
     console.log("Transaction committed");
-
     res.status(200).json({
       success: true,
       message: "Module updated successfully",
@@ -422,7 +391,6 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
     });
   } catch (error) {
     console.log(`Error in updateModule: ${error.message}`);
-
     if (transactionStarted) {
       try {
         console.log("Aborting transaction");
@@ -432,7 +400,6 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
         console.error("Error aborting transaction:", abortError);
       }
     }
-
     return next(new ErrorHandler(error.message, 500));
   } finally {
     console.log("Ending session");
@@ -440,7 +407,6 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
     console.log("Session ended");
   }
 });
-
 // Delete module
 exports.deleteModule = catchAsyncErrors(async (req, res, next) => {
   console.log("deleteModule: Started");
