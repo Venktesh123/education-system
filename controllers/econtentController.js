@@ -170,72 +170,7 @@ exports.createEContent = catchAsyncErrors(async (req, res, next) => {
     } else {
       console.log("Found existing EContent document");
 
-      // Check if module number already exists
-      const existingModuleIndex = eContent.modules.findIndex(
-        (module) => module.moduleNumber === Number(moduleNumber)
-      );
-
-      if (existingModuleIndex !== -1) {
-        console.log(
-          `Module number ${moduleNumber} already exists - updating existing module`
-        );
-
-        // Update the existing module title if provided
-        if (moduleTitle) {
-          eContent.modules[existingModuleIndex].moduleTitle = moduleTitle;
-        }
-
-        // Update the link if provided
-        if (link) {
-          eContent.modules[existingModuleIndex].link = link;
-        }
-
-        // Handle file uploads if any
-        if (req.files && req.files.files) {
-          try {
-            const allowedTypes = [
-              "application/pdf",
-              "application/vnd.ms-powerpoint",
-              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ];
-
-            const { filesArray, uploadedFiles } = await handleFileUploads(
-              req.files.files,
-              allowedTypes,
-              next
-            );
-
-            const fileObjects = createFileObjects(filesArray, uploadedFiles);
-
-            // Add the files to the existing module
-            eContent.modules[existingModuleIndex].files.push(...fileObjects);
-            console.log("New files added to existing module");
-          } catch (uploadError) {
-            console.error("Error handling file uploads:", uploadError);
-            return next(
-              new ErrorHandler(
-                uploadError.message || "Failed to upload files",
-                uploadError.statusCode || 500
-              )
-            );
-          }
-        }
-
-        // Save and return early
-        console.log("Saving updated eContent");
-        await eContent.save({ session });
-
-        console.log("Committing transaction");
-        await session.commitTransaction();
-        transactionStarted = false;
-
-        return res.status(200).json({
-          success: true,
-          message: "Existing module updated successfully",
-          courseId: courseId,
-          module: eContent.modules[existingModuleIndex],
-        });
-      }
+      // We've removed the module number check to always create a new module
     }
 
     // Create new module object
@@ -315,7 +250,6 @@ exports.createEContent = catchAsyncErrors(async (req, res, next) => {
     console.log("Session ended");
   }
 });
-
 // Get EContent for a course
 exports.getEContentByCourse = catchAsyncErrors(async (req, res, next) => {
   console.log("getEContentByCourse: Started");
