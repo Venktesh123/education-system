@@ -271,25 +271,35 @@ const getCourseLectures = async function (req, res) {
   try {
     logger.info(`Fetching lectures for course ID: ${req.params.courseId}`);
 
+    // Find the teacher based on authenticated user
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
       logger.error(`Teacher not found for user ID: ${req.user.id}`);
       return res.status(404).json({ error: "Teacher not found" });
     }
 
+    // Find the course by ID (only contains lecture IDs at this point)
     const course = await Course.findOne({
       _id: req.params.courseId,
       teacher: teacher._id,
-    }).populate("lectures");
+    });
 
     if (!course) {
       logger.error(`Course not found with ID: ${req.params.courseId}`);
       return res.status(404).json({ error: "Course not found" });
     }
 
-    // Before returning lectures, update any that have passed their review deadline
+    // Get the array of lecture IDs from the course
+    const lectureIds = course.lectures;
+
+    // Find all lectures using the array of IDs
+    const lectures = await Lecture.find({
+      _id: { $in: lectureIds },
+    });
+
+    // Check for lectures that have passed their review deadline
     const now = new Date();
-    const updatePromises = course.lectures.map(async (lecture) => {
+    const updatePromises = lectures.map(async (lecture) => {
       if (
         !lecture.isReviewed &&
         lecture.reviewDeadline &&
@@ -301,18 +311,21 @@ const getCourseLectures = async function (req, res) {
       return lecture;
     });
 
+    // Wait for all updates to complete
     await Promise.all(updatePromises);
 
-    // Refresh the course to get updated lectures
-    await course.populate("lectures");
+    // Re-fetch lectures to get updated data
+    const updatedLectures = await Lecture.find({
+      _id: { $in: lectureIds },
+    });
 
-    res.json(course.lectures);
+    // Return the complete lecture information
+    res.json(updatedLectures);
   } catch (error) {
     logger.error("Error in getCourseLectures:", error);
     res.status(500).json({ error: error.message });
   }
 };
-
 // Get a specific lecture
 const getLectureById = async function (req, res) {
   try {
