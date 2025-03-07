@@ -13,38 +13,64 @@ const lectureSchema = new mongoose.Schema(
     videoUrl: {
       type: String,
       required: true,
-      validate: {
-        validator: function (v) {
-          // More flexible YouTube URL validation that accepts additional parameters
-          const youtubeRegex =
-            /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+([\?&].+)?$/;
-          return youtubeRegex.test(v);
-        },
-        message: (props) =>
-          `${props.value} is not a valid YouTube URL! Please provide a valid YouTube URL.`,
-      },
+    },
+    videoKey: {
+      type: String,
+      required: false, // Store the S3 key for potential deletion later
     },
     course: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Course",
       required: true,
     },
+    isReviewed: {
+      type: Boolean,
+      default: false,
+    },
+    reviewDeadline: {
+      type: Date,
+      default: function () {
+        // Set default review deadline to 7 days from creation
+        const deadline = new Date();
+        deadline.setDate(deadline.getDate() + 7);
+        return deadline;
+      },
+    },
   },
   { timestamps: true }
 );
 
-// Helper method to extract video ID
-lectureSchema.methods.getVideoId = function () {
-  const url = this.videoUrl;
-  if (url.includes("youtu.be/")) {
-    // Handle shortened URLs
-    const id = url.split("youtu.be/")[1].split("?")[0];
-    return id;
-  } else {
-    // Handle full URLs
-    const match = url.match(/[?&]v=([^&]+)/);
-    return match ? match[1] : null;
+// Middleware to auto-mark as reviewed if deadline has passed
+lectureSchema.pre("save", function (next) {
+  if (
+    !this.isReviewed &&
+    this.reviewDeadline &&
+    new Date() >= this.reviewDeadline
+  ) {
+    this.isReviewed = true;
   }
+  next();
+});
+
+// Middleware to auto-mark as reviewed if deadline has passed when querying
+lectureSchema.pre("find", function () {
+  this.setOptions({
+    runValidators: true,
+  });
+});
+
+// Static method to update all lectures past their review deadline
+lectureSchema.statics.updateReviewStatus = async function () {
+  const now = new Date();
+  return this.updateMany(
+    {
+      isReviewed: false,
+      reviewDeadline: { $lte: now },
+    },
+    {
+      $set: { isReviewed: true },
+    }
+  );
 };
 
 module.exports = mongoose.model("Lecture", lectureSchema);
