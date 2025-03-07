@@ -1,16 +1,61 @@
 const express = require("express");
 const router = express.Router();
-const lectureController = require("../controllers/lectureController");
+const {
+  createLecture,
+  updateLecture,
+  getLectureById,
+  getCourseLectures,
+  deleteLecture,
+  updateLectureReviewStatus,
+  updateAllLectureReviewStatuses,
+} = require("../controllers/lectureController");
 const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
-router.post("/", auth, checkRole(["teacher"]), lectureController.createLecture);
-router.put(
-  "/:id",
+// Routes for individual lectures
+router.post("/:courseId", auth, checkRole("teacher"), createLecture);
+router.put("/:id", auth, checkRole("teacher"), updateLecture);
+router.get("/:lectureId", auth, getLectureById);
+
+// Routes for course lectures
+router.get(
+  "/:courseId/lectures",
   auth,
-  checkRole(["teacher"]),
-  lectureController.updateLecture
+  checkRole("teacher"),
+  getCourseLectures
 );
-router.get("/:id", auth, lectureController.getLecture);
+router.get(
+  "/:courseId/lectures/:lectureId",
+  auth,
+  checkRole("teacher"),
+  getLectureById
+);
+router.post("/:courseId/lectures", auth, checkRole("teacher"), createLecture);
+router.put(
+  "/:courseId/lectures/:lectureId",
+  auth,
+  checkRole("teacher"),
+  updateLecture
+);
+router.delete(
+  "/:courseId/lectures/:lectureId",
+  auth,
+  checkRole("teacher"),
+  deleteLecture
+);
+
+// Routes specifically for review management
+router.put(
+  "/:courseId/lectures/:lectureId/review",
+  auth,
+  checkRole("teacher"),
+  updateLectureReviewStatus
+);
+router.put(
+  "/:courseId/lectures/review-all",
+  auth,
+  checkRole("teacher"),
+  updateAllLectureReviewStatuses
+);
 
 module.exports = router;

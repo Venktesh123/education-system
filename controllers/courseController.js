@@ -1,18 +1,91 @@
 const Course = require("../models/Course");
 const Teacher = require("../models/Teacher");
+const Student = require("../models/Student");
+const Lecture = require("../models/Lecture");
 const CourseOutcome = require("../models/CourseOutcome");
 const CourseSchedule = require("../models/CourseSchedule");
 const CourseSyllabus = require("../models/CourseSyllabus");
 const WeeklyPlan = require("../models/WeeklyPlan");
 const CreditPoints = require("../models/CreditPoints");
 const CourseAttendance = require("../models/CourseAttendance");
-const Student = require("../models/Student");
 const mongoose = require("mongoose");
+const AWS = require("aws-sdk");
 
 // Better logging setup - replace with your preferred logging library
 const logger = {
   info: (message) => console.log(`[INFO] ${message}`),
   error: (message, error) => console.error(`[ERROR] ${message}`, error),
+};
+
+// Configure AWS SDK
+const s3 = new AWS.S3({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  region: process.env.AWS_REGION,
+});
+
+// Upload file to S3
+const uploadFileToS3 = async (file, path) => {
+  console.log("Uploading file to S3");
+  return new Promise((resolve, reject) => {
+    // Make sure we have the file data in the right format for S3
+    const fileContent = file.data;
+    if (!fileContent) {
+      console.log("No file content found");
+      return reject(new Error("No file content found"));
+    }
+
+    // Generate a unique filename
+    const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
+
+    // Set up the S3 upload parameters
+    const params = {
+      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Key: fileName,
+      Body: fileContent,
+      ContentType: file.mimetype,
+    };
+
+    console.log("S3 upload params prepared");
+
+    // Upload to S3
+    s3.upload(params, (err, data) => {
+      if (err) {
+        console.log("S3 upload error:", err);
+        return reject(err);
+      }
+      console.log("File uploaded successfully:", fileName);
+      resolve({
+        url: data.Location,
+        key: data.Key,
+      });
+    });
+  });
+};
+
+// Delete file from S3
+const deleteFileFromS3 = async (key) => {
+  console.log("Deleting file from S3:", key);
+  return new Promise((resolve, reject) => {
+    if (!key) {
+      console.log("No file key provided");
+      return resolve({ message: "No file key provided" });
+    }
+
+    const params = {
+      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Key: key,
+    };
+
+    s3.deleteObject(params, (err, data) => {
+      if (err) {
+        console.log("S3 delete error:", err);
+        return reject(err);
+      }
+      console.log("File deleted successfully from S3");
+      resolve(data);
+    });
+  });
 };
 
 // Helper function to format course data
@@ -22,6 +95,40 @@ const formatCourseData = (course) => {
   if (course.attendance && course.attendance.sessions) {
     for (const [key, value] of course.attendance.sessions.entries()) {
       attendanceSessions[key] = value;
+    }
+  }
+
+  // Handle both embedded and referenced lectures
+  let lectures = [];
+
+  if (course.lectures) {
+    if (Array.isArray(course.lectures)) {
+      lectures = course.lectures.map((lecture) => {
+        // For embedded lectures
+        if (lecture && typeof lecture === "object" && !lecture._id) {
+          return {
+            title: lecture.title,
+            recordingUrl: lecture.recordingUrl,
+            date: lecture.date,
+            duration: lecture.duration,
+          };
+        }
+        // For referenced lectures
+        else if (lecture && typeof lecture === "object" && lecture._id) {
+          return {
+            _id: lecture._id,
+            title: lecture.title,
+            content: lecture.content,
+            videoUrl: lecture.videoUrl,
+            isReviewed: lecture.isReviewed,
+            reviewDeadline: lecture.reviewDeadline,
+            createdAt: lecture.createdAt,
+            updatedAt: lecture.updatedAt,
+          };
+        }
+        // If lectures are just IDs
+        return lecture;
+      });
     }
   }
 
@@ -76,7 +183,7 @@ const formatCourseData = (course) => {
           endSemesterExamDate: "",
           classDaysAndTimes: [],
         },
-    lectures: course.lectures || [],
+    lectures: lectures,
     attendance: {
       sessions: attendanceSessions,
     },
@@ -171,8 +278,8 @@ const getCourseById = async function (req, res) {
       },
     });
 
-    // Find the course
-    const course = await Course.findOne({
+    // Find the course and populate all related fields
+    const courseQuery = Course.findOne({
       _id: req.params.courseId,
       teacher: teacher._id,
     })
@@ -184,9 +291,23 @@ const getCourseById = async function (req, res) {
       .populate("creditPoints")
       .populate("attendance");
 
+    // Check if we're using embedded or referenced lectures
+    const course = await courseQuery.exec();
+
     if (!course) {
       logger.error(`Course not found with ID: ${req.params.courseId}`);
       return res.status(404).json({ error: "Course not found" });
+    }
+
+    // Check if lectures are referenced (ObjectIds) instead of embedded
+    const hasReferencedLectures =
+      course.lectures &&
+      course.lectures.length > 0 &&
+      typeof course.lectures[0] !== "object";
+
+    // Populate lectures if they are references
+    if (hasReferencedLectures) {
+      await course.populate("lectures");
     }
 
     logger.info(`Found course: ${course.title}`);
@@ -256,14 +377,22 @@ const createCourse = async function (req, res) {
       throw new Error("Teacher not found");
     }
 
+    // Determine if we're using embedded or referenced lectures
+    const useEmbeddedLectures =
+      req.body.lectures &&
+      req.body.lectures.length > 0 &&
+      (req.body.lectures[0].recordingUrl || !req.body.lectures[0].content);
+
     // Create main course
-    const course = new Course({
+    const courseData = {
       title: req.body.title,
       aboutCourse: req.body.aboutCourse,
       semester: req.body.semester,
       teacher: teacher._id,
-      lectures: req.body.lectures || [],
-    });
+      lectures: useEmbeddedLectures ? req.body.lectures : [], // Use embedded lectures if appropriate
+    };
+
+    const course = new Course(courseData);
     await course.save({ session });
     logger.info(`Main course created with ID: ${course._id}`);
 
@@ -361,6 +490,32 @@ const createCourse = async function (req, res) {
       logger.info(`Course attendance created with ID: ${attendance[0]._id}`);
     }
 
+    // Create lectures as separate documents if not using embedded lectures
+    if (
+      !useEmbeddedLectures &&
+      req.body.lectures &&
+      req.body.lectures.length > 0
+    ) {
+      logger.info("Creating lectures as separate documents for the course");
+      const lecturePromises = req.body.lectures.map((lectureData) => {
+        return Lecture.create(
+          [
+            {
+              ...lectureData,
+              course: course._id,
+            },
+          ],
+          { session }
+        );
+      });
+
+      const createdLectures = await Promise.all(lecturePromises);
+      const lectureIds = createdLectures.map((lecture) => lecture[0]._id);
+
+      course.lectures = lectureIds;
+      logger.info(`Created ${lectureIds.length} lectures for the course`);
+    }
+
     // Save updated course with all references
     logger.info("Saving updated course with all references");
     await course.save({ session });
@@ -375,7 +530,7 @@ const createCourse = async function (req, res) {
     const students = await Student.find({ teacher: teacher._id }).session(
       session
     );
-    console.log(students, "students");
+
     // Add course ID to all students' courses arrays
     if (students && students.length > 0) {
       logger.info("Adding course to students' course arrays");
@@ -399,7 +554,7 @@ const createCourse = async function (req, res) {
 
     // Get the fully populated course
     logger.info("Fetching fully populated course");
-    const createdCourse = await Course.findById(course._id)
+    const courseQuery = Course.findById(course._id)
       .populate("semester")
       .populate("outcomes")
       .populate("schedule")
@@ -408,7 +563,14 @@ const createCourse = async function (req, res) {
       .populate("creditPoints")
       .populate("attendance");
 
+    // Populate lectures if they are referenced
+    if (!useEmbeddedLectures) {
+      courseQuery.populate("lectures");
+    }
+
+    const createdCourse = await courseQuery.exec();
     const formattedCourse = formatCourseData(createdCourse);
+
     logger.info("Sending response with formatted course data");
     res.status(201).json(formattedCourse);
   } catch (error) {
@@ -462,11 +624,22 @@ const updateCourse = async function (req, res) {
       throw new Error("Course not found");
     }
 
+    // Determine if we're using embedded or referenced lectures
+    const isUsingEmbeddedLectures =
+      course.lectures &&
+      course.lectures.length > 0 &&
+      typeof course.lectures[0] === "object" &&
+      !course.lectures[0]._id;
+
     // Update main course fields
     if (req.body.title) course.title = req.body.title;
     if (req.body.aboutCourse) course.aboutCourse = req.body.aboutCourse;
     if (req.body.semester) course.semester = req.body.semester;
-    if (req.body.lectures) course.lectures = req.body.lectures;
+
+    // Update lectures if they are embedded
+    if (isUsingEmbeddedLectures && req.body.lectures) {
+      course.lectures = req.body.lectures;
+    }
 
     await course.save({ session });
     logger.info("Updated main course fields");
@@ -624,13 +797,64 @@ const updateCourse = async function (req, res) {
       }
     }
 
+    // Handle lectures update if they are referenced documents
+    if (!isUsingEmbeddedLectures && req.body.lectures) {
+      // Get existing lecture IDs
+      const existingLectureIds = course.lectures.map((id) =>
+        id instanceof mongoose.Types.ObjectId ? id.toString() : id.toString()
+      );
+
+      // Process each lecture from the request
+      const updatePromises = [];
+      const newLectures = [];
+
+      for (const lectureData of req.body.lectures) {
+        // If lecture has an ID, update it
+        if (
+          lectureData._id &&
+          existingLectureIds.includes(lectureData._id.toString())
+        ) {
+          updatePromises.push(
+            Lecture.findByIdAndUpdate(lectureData._id, lectureData, {
+              session,
+              new: true,
+            })
+          );
+        }
+        // Otherwise create a new lecture
+        else {
+          newLectures.push({
+            ...lectureData,
+            course: course._id,
+          });
+        }
+      }
+
+      // Create any new lectures
+      if (newLectures.length > 0) {
+        const createdLectures = await Lecture.create(newLectures, { session });
+        const newLectureIds = createdLectures.map((lecture) => lecture._id);
+
+        // Add new lecture IDs to the course
+        course.lectures = [...course.lectures, ...newLectureIds];
+        await course.save({ session });
+        logger.info(`Added ${newLectureIds.length} new lectures to the course`);
+      }
+
+      // Update existing lectures
+      if (updatePromises.length > 0) {
+        await Promise.all(updatePromises);
+        logger.info(`Updated ${updatePromises.length} existing lectures`);
+      }
+    }
+
     logger.info("Committing transaction");
     await session.commitTransaction();
     transactionStarted = false;
     logger.info("Transaction committed successfully");
 
     // Get updated course with all populated fields
-    const updatedCourse = await Course.findById(course._id)
+    const courseQuery = Course.findById(course._id)
       .populate("semester")
       .populate("outcomes")
       .populate("schedule")
@@ -639,6 +863,12 @@ const updateCourse = async function (req, res) {
       .populate("creditPoints")
       .populate("attendance");
 
+    // Populate lectures if they are referenced
+    if (!isUsingEmbeddedLectures) {
+      courseQuery.populate("lectures");
+    }
+
+    const updatedCourse = await courseQuery.exec();
     const formattedCourse = formatCourseData(updatedCourse);
     res.json(formattedCourse);
   } catch (error) {
@@ -718,6 +948,48 @@ const deleteCourse = async function (req, res) {
     if (course.attendance) {
       await CourseAttendance.findByIdAndDelete(course.attendance, { session });
       logger.info(`Deleted course attendance: ${course.attendance}`);
+    }
+
+    // Determine if we're using embedded or referenced lectures
+    const isUsingReferencedLectures =
+      course.lectures &&
+      course.lectures.length > 0 &&
+      (typeof course.lectures[0] !== "object" || course.lectures[0]._id);
+
+    // Delete referenced lectures if they exist
+    if (isUsingReferencedLectures) {
+      // Get all lecture IDs
+      const lectureIds = course.lectures.map((id) =>
+        id instanceof mongoose.Types.ObjectId ? id : id._id
+      );
+
+      // Find all lectures to get their videoKeys
+      const lectures = await Lecture.find({
+        _id: { $in: lectureIds },
+      }).session(session);
+
+      // Delete videos from S3 for each lecture
+      for (const lecture of lectures) {
+        if (lecture.videoKey) {
+          try {
+            await deleteFileFromS3(lecture.videoKey);
+            logger.info(`Deleted video from S3: ${lecture.videoKey}`);
+          } catch (deleteError) {
+            logger.error("Error deleting video file:", deleteError);
+            // Continue with lecture deletion even if S3 delete fails
+          }
+        }
+      }
+
+      // Delete all lectures
+      await Lecture.deleteMany(
+        {
+          _id: { $in: lectureIds },
+        },
+        { session }
+      );
+
+      logger.info(`Deleted ${lectureIds.length} lectures for this course`);
     }
 
     // Remove course from teacher's courses
@@ -872,6 +1144,366 @@ const updateCourseAttendance = async function (req, res) {
   }
 };
 
+// Add a new lecture to a course
+const addLecture = async function (req, res) {
+  try {
+    logger.info(`Adding lecture to course ID: ${req.params.courseId}`);
+
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      logger.error(`Teacher not found for user ID: ${req.user.id}`);
+      return res.status(404).json({ error: "Teacher not found" });
+    }
+
+    const course = await Course.findOne({
+      _id: req.params.courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      logger.error(`Course not found with ID: ${req.params.courseId}`);
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    // Determine if we're using embedded or referenced lectures
+    const isUsingEmbeddedLectures =
+      course.lectures &&
+      course.lectures.length > 0 &&
+      typeof course.lectures[0] === "object" &&
+      !course.lectures[0]._id;
+
+    if (isUsingEmbeddedLectures) {
+      // Add lecture to embedded array
+      const newLecture = {
+        title: req.body.title,
+        recordingUrl: req.body.recordingUrl || req.body.videoUrl,
+        date: req.body.date || new Date(),
+        duration: req.body.duration || 0,
+      };
+
+      course.lectures.push(newLecture);
+      await course.save();
+
+      logger.info(`Added embedded lecture to course: ${course._id}`);
+      return res.status(201).json(course);
+    } else {
+      // Handle video file upload if present
+      let videoUrl = req.body.videoUrl;
+      let videoKey = null;
+
+      if (req.files && req.files.video) {
+        const videoFile = req.files.video;
+
+        // Validate file type
+        if (!videoFile.mimetype.startsWith("video/")) {
+          return res
+            .status(400)
+            .json({ error: "Uploaded file must be a video" });
+        }
+
+        // Upload to S3
+        const uploadPath = `courses/${course._id}/lectures`;
+        const uploadResult = await uploadFileToS3(videoFile, uploadPath);
+
+        videoUrl = uploadResult.url;
+        videoKey = uploadResult.key;
+      }
+
+      // Create new lecture document
+      const newLecture = new Lecture({
+        title: req.body.title,
+        content: req.body.content || req.body.title,
+        videoUrl: videoUrl,
+        videoKey: videoKey,
+        course: course._id,
+        isReviewed: req.body.isReviewed || false,
+        reviewDeadline: req.body.reviewDeadline || undefined,
+      });
+
+      await newLecture.save();
+
+      // Add lecture ID to course
+      course.lectures.push(newLecture._id);
+      await course.save();
+
+      logger.info(`Created new lecture document: ${newLecture._id}`);
+      return res.status(201).json(newLecture);
+    }
+  } catch (error) {
+    logger.error("Error in addLecture:", error);
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+// Update a specific lecture in a course
+const updateCourseLecture = async function (req, res) {
+  try {
+    logger.info(
+      `Updating lecture ID: ${req.params.lectureId} in course ID: ${req.params.courseId}`
+    );
+
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      logger.error(`Teacher not found for user ID: ${req.user.id}`);
+      return res.status(404).json({ error: "Teacher not found" });
+    }
+
+    const course = await Course.findOne({
+      _id: req.params.courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      logger.error(`Course not found with ID: ${req.params.courseId}`);
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    // Determine if we're using embedded or referenced lectures
+    const isUsingEmbeddedLectures =
+      course.lectures &&
+      course.lectures.length > 0 &&
+      typeof course.lectures[0] === "object" &&
+      !course.lectures[0]._id;
+
+    if (isUsingEmbeddedLectures) {
+      // For embedded lectures, find by index
+      const lectureIndex = parseInt(req.params.lectureId);
+
+      if (
+        isNaN(lectureIndex) ||
+        lectureIndex < 0 ||
+        lectureIndex >= course.lectures.length
+      ) {
+        logger.error(`Invalid lecture index: ${req.params.lectureId}`);
+        return res.status(404).json({ error: "Lecture not found" });
+      }
+
+      // Update embedded lecture
+      if (req.body.title) course.lectures[lectureIndex].title = req.body.title;
+      if (req.body.recordingUrl)
+        course.lectures[lectureIndex].recordingUrl = req.body.recordingUrl;
+      if (req.body.videoUrl)
+        course.lectures[lectureIndex].recordingUrl = req.body.videoUrl;
+      if (req.body.date) course.lectures[lectureIndex].date = req.body.date;
+      if (req.body.duration)
+        course.lectures[lectureIndex].duration = req.body.duration;
+
+      await course.save();
+
+      logger.info(`Updated embedded lecture at index: ${lectureIndex}`);
+      return res.json(course.lectures[lectureIndex]);
+    } else {
+      // For referenced lectures, find the lecture by ID
+      const lecture = await Lecture.findOne({
+        _id: req.params.lectureId,
+        course: course._id,
+      });
+
+      if (!lecture) {
+        logger.error(`Lecture not found with ID: ${req.params.lectureId}`);
+        return res.status(404).json({ error: "Lecture not found" });
+      }
+
+      // Update lecture fields
+      if (req.body.title) lecture.title = req.body.title;
+      if (req.body.content) lecture.content = req.body.content;
+
+      // Handle video file update if provided
+      if (req.files && req.files.video) {
+        const videoFile = req.files.video;
+
+        // Validate file type
+        if (!videoFile.mimetype.startsWith("video/")) {
+          return res
+            .status(400)
+            .json({ error: "Uploaded file must be a video" });
+        }
+
+        // Delete old video from S3 if it exists
+        if (lecture.videoKey) {
+          try {
+            await deleteFileFromS3(lecture.videoKey);
+          } catch (deleteError) {
+            logger.error("Error deleting old video file:", deleteError);
+            // Continue with upload even if delete fails
+          }
+        }
+
+        // Upload new video to S3
+        const uploadPath = `courses/${course._id}/lectures`;
+        const uploadResult = await uploadFileToS3(videoFile, uploadPath);
+
+        lecture.videoUrl = uploadResult.url;
+        lecture.videoKey = uploadResult.key;
+      } else if (req.body.videoUrl) {
+        lecture.videoUrl = req.body.videoUrl;
+      }
+
+      // Update review fields
+      if (req.body.isReviewed !== undefined)
+        lecture.isReviewed = req.body.isReviewed;
+      if (req.body.reviewDeadline)
+        lecture.reviewDeadline = new Date(req.body.reviewDeadline);
+
+      await lecture.save();
+
+      logger.info(`Updated lecture: ${lecture._id}`);
+      return res.json(lecture);
+    }
+  } catch (error) {
+    logger.error("Error in updateCourseLecture:", error);
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+// Delete a lecture from a course
+const deleteCourseLecture = async function (req, res) {
+  try {
+    logger.info(
+      `Deleting lecture ID: ${req.params.lectureId} from course ID: ${req.params.courseId}`
+    );
+
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      logger.error(`Teacher not found for user ID: ${req.user.id}`);
+      return res.status(404).json({ error: "Teacher not found" });
+    }
+
+    const course = await Course.findOne({
+      _id: req.params.courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      logger.error(`Course not found with ID: ${req.params.courseId}`);
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    // Determine if we're using embedded or referenced lectures
+    const isUsingEmbeddedLectures =
+      course.lectures &&
+      course.lectures.length > 0 &&
+      typeof course.lectures[0] === "object" &&
+      !course.lectures[0]._id;
+
+    if (isUsingEmbeddedLectures) {
+      // For embedded lectures, find by index and remove
+      const lectureIndex = parseInt(req.params.lectureId);
+
+      if (
+        isNaN(lectureIndex) ||
+        lectureIndex < 0 ||
+        lectureIndex >= course.lectures.length
+      ) {
+        logger.error(`Invalid lecture index: ${req.params.lectureId}`);
+        return res.status(404).json({ error: "Lecture not found" });
+      }
+
+      // Remove lecture at index
+      course.lectures.splice(lectureIndex, 1);
+      await course.save();
+
+      logger.info(`Removed embedded lecture at index: ${lectureIndex}`);
+      return res.json({ message: "Lecture removed successfully" });
+    } else {
+      // For referenced lectures, find the lecture by ID
+      const lecture = await Lecture.findOne({
+        _id: req.params.lectureId,
+        course: course._id,
+      });
+
+      if (!lecture) {
+        logger.error(`Lecture not found with ID: ${req.params.lectureId}`);
+        return res.status(404).json({ error: "Lecture not found" });
+      }
+
+      // Delete video from S3 if it exists
+      if (lecture.videoKey) {
+        try {
+          await deleteFileFromS3(lecture.videoKey);
+          logger.info(`Deleted video from S3: ${lecture.videoKey}`);
+        } catch (deleteError) {
+          logger.error("Error deleting video file:", deleteError);
+          // Continue with lecture deletion even if S3 delete fails
+        }
+      }
+
+      // Remove lecture ID from course
+      course.lectures = course.lectures.filter(
+        (id) => id.toString() !== lecture._id.toString()
+      );
+      await course.save();
+
+      // Delete the lecture document
+      await Lecture.findByIdAndDelete(lecture._id);
+
+      logger.info(`Deleted lecture: ${lecture._id}`);
+      return res.json({ message: "Lecture deleted successfully" });
+    }
+  } catch (error) {
+    logger.error("Error in deleteCourseLecture:", error);
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+// Get all lectures for a course
+const getCourseLectures = async function (req, res) {
+  try {
+    logger.info(`Getting all lectures for course ID: ${req.params.courseId}`);
+
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      logger.error(`Teacher not found for user ID: ${req.user.id}`);
+      return res.status(404).json({ error: "Teacher not found" });
+    }
+
+    const course = await Course.findOne({
+      _id: req.params.courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      logger.error(`Course not found with ID: ${req.params.courseId}`);
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    // Determine if we're using embedded or referenced lectures
+    const isUsingEmbeddedLectures =
+      course.lectures &&
+      course.lectures.length > 0 &&
+      typeof course.lectures[0] === "object" &&
+      !course.lectures[0]._id;
+
+    if (isUsingEmbeddedLectures) {
+      // Return embedded lectures directly
+      logger.info(`Returning ${course.lectures.length} embedded lectures`);
+      return res.json(course.lectures);
+    } else {
+      // For referenced lectures, populate and return
+      await course.populate("lectures");
+
+      // Check and update review status for all lectures
+      const now = new Date();
+      for (const lecture of course.lectures) {
+        if (
+          !lecture.isReviewed &&
+          lecture.reviewDeadline &&
+          now >= lecture.reviewDeadline
+        ) {
+          lecture.isReviewed = true;
+          await lecture.save();
+        }
+      }
+
+      logger.info(`Returning ${course.lectures.length} referenced lectures`);
+      return res.json(course.lectures);
+    }
+  } catch (error) {
+    logger.error("Error in getCourseLectures:", error);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = {
   getTeacherCourses,
   getCourseById,
@@ -879,4 +1511,8 @@ module.exports = {
   updateCourse,
   deleteCourse,
   updateCourseAttendance,
+  addLecture,
+  updateCourseLecture,
+  deleteCourseLecture,
+  getCourseLectures,
 };
