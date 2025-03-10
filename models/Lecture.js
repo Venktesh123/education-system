@@ -4,24 +4,19 @@ const lectureSchema = new mongoose.Schema(
   {
     title: {
       type: String,
-      required: true,
     },
     content: {
       type: String,
-      required: true,
     },
     videoUrl: {
       type: String,
-      required: true,
     },
     videoKey: {
       type: String,
-      required: false, // Store the S3 key for potential deletion later
     },
     course: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Course",
-      required: true,
     },
     isReviewed: {
       type: Boolean,
