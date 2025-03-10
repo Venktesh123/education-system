@@ -357,7 +357,7 @@ const getCourseById = async function (req, res) {
       if (teacher) {
         hasAccess = true;
         userDetails = {
-          _id: teacher._id,
+          id: teacher._id,
           name: teacher.user?.name,
           email: teacher.email,
         };
@@ -373,7 +373,7 @@ const getCourseById = async function (req, res) {
 
         students =
           teacher.students?.map((student, index) => ({
-            _id: student._id.toString(),
+            id: student._id.toString(),
             rollNo: `CS${String(index + 101).padStart(3, "0")}`,
             name: student.user?.name || "Unknown",
             program: "Computer Science",
@@ -396,7 +396,7 @@ const getCourseById = async function (req, res) {
         if (isEnrolled) {
           hasAccess = true;
           userDetails = {
-            _id: student._id,
+            id: student._id,
             name: student.user?.name,
             email: student.user?.email,
           };
@@ -431,7 +431,7 @@ const getCourseById = async function (req, res) {
 
     // Structure the response
     const response = {
-      _id: formattedCourse._id,
+      id: formattedCourse._id,
       title: formattedCourse.title,
       aboutCourse: formattedCourse.aboutCourse,
       semester: formattedCourse.semester,
@@ -447,7 +447,7 @@ const getCourseById = async function (req, res) {
     // Add user-specific data
     if (userRole === "teacher") {
       response.teacher = {
-        _id: userDetails._id,
+        id: userDetails.id,
         name: userDetails.name,
         email: userDetails.email,
         totalStudents: students.length,
@@ -455,7 +455,7 @@ const getCourseById = async function (req, res) {
       response.students = students;
     } else if (userRole === "student") {
       response.student = {
-        _id: userDetails._id,
+        id: userDetails.id,
         name: userDetails.name,
         email: userDetails.email,
       };
@@ -466,7 +466,7 @@ const getCourseById = async function (req, res) {
       );
       if (courseTeacher) {
         response.teacher = {
-          _id: courseTeacher._id,
+          id: courseTeacher._id,
           name: courseTeacher.user?.name,
           email: courseTeacher.user?.email,
         };
