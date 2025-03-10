@@ -922,55 +922,55 @@ const updateCourse = async function (req, res) {
     }
 
     // Handle lectures update if they are referenced documents
-    if (!isUsingEmbeddedLectures && req.body.lectures) {
-      // Get existing lecture IDs
-      const existingLectureIds = course.lectures.map((id) =>
-        id instanceof mongoose.Types.ObjectId ? id.toString() : id.toString()
-      );
+    // if (!isUsingEmbeddedLectures && req.body.lectures) {
+    //   // Get existing lecture IDs
+    //   const existingLectureIds = course.lectures.map((id) =>
+    //     id instanceof mongoose.Types.ObjectId ? id.toString() : id.toString()
+    //   );
 
-      // Process each lecture from the request
-      const updatePromises = [];
-      const newLectures = [];
+    //   // Process each lecture from the request
+    //   const updatePromises = [];
+    //   const newLectures = [];
 
-      for (const lectureData of req.body.lectures) {
-        // If lecture has an ID, update it
-        if (
-          lectureData._id &&
-          existingLectureIds.includes(lectureData._id.toString())
-        ) {
-          updatePromises.push(
-            Lecture.findByIdAndUpdate(lectureData._id, lectureData, {
-              session,
-              new: true,
-            })
-          );
-        }
-        // Otherwise create a new lecture
-        else {
-          newLectures.push({
-            ...lectureData,
-            course: course._id,
-          });
-        }
-      }
+    //   for (const lectureData of req.body.lectures) {
+    //     // If lecture has an ID, update it
+    //     if (
+    //       lectureData._id &&
+    //       existingLectureIds.includes(lectureData._id.toString())
+    //     ) {
+    //       updatePromises.push(
+    //         Lecture.findByIdAndUpdate(lectureData._id, lectureData, {
+    //           session,
+    //           new: true,
+    //         })
+    //       );
+    //     }
+    //     // Otherwise create a new lecture
+    //     else {
+    //       newLectures.push({
+    //         ...lectureData,
+    //         course: course._id,
+    //       });
+    //     }
+    //   }
 
-      // Create any new lectures
-      if (newLectures.length > 0) {
-        const createdLectures = await Lecture.create(newLectures, { session });
-        const newLectureIds = createdLectures.map((lecture) => lecture._id);
+    //   // Create any new lectures
+    //   if (newLectures.length > 0) {
+    //     const createdLectures = await Lecture.create(newLectures, { session });
+    //     const newLectureIds = createdLectures.map((lecture) => lecture._id);
 
-        // Add new lecture IDs to the course
-        course.lectures = [...course.lectures, ...newLectureIds];
-        await course.save({ session });
-        logger.info(`Added ${newLectureIds.length} new lectures to the course`);
-      }
+    //     // Add new lecture IDs to the course
+    //     course.lectures = [...course.lectures, ...newLectureIds];
+    //     await course.save({ session });
+    //     logger.info(`Added ${newLectureIds.length} new lectures to the course`);
+    //   }
 
-      // Update existing lectures
-      if (updatePromises.length > 0) {
-        await Promise.all(updatePromises);
-        logger.info(`Updated ${updatePromises.length} existing lectures`);
-      }
-    }
+    //   // Update existing lectures
+    //   if (updatePromises.length > 0) {
+    //     await Promise.all(updatePromises);
+    //     logger.info(`Updated ${updatePromises.length} existing lectures`);
+    //   }
+    // }
 
     logger.info("Committing transaction");
     await session.commitTransaction();
