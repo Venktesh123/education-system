@@ -21,7 +21,7 @@ router.post(
 router.get(
   "/my-students",
   auth, // Authentication middleware
-  checkRole(["teacher"]), // Role check middleware
+  checkRole(["teacher", "student"]), // Role check middleware
   adminController.getMyStudents
 );
 
@@ -29,7 +29,7 @@ router.get(
 router.get(
   "/teacher/:teacherId/students",
   auth,
-  checkRole(["admin"]),
+  checkRole(["teacher", "student"]),
   adminController.getStudentsByTeacherId
 );
 

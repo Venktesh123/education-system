@@ -16,6 +16,7 @@ router.post(
 router.get(
   "/course/:courseId/econtent",
   auth,
+  checkRole(["teacher", "student"]),
   eContentController.getEContentByCourse
 );
 
@@ -23,6 +24,7 @@ router.get(
 router.get(
   "/course/:courseId/econtent/module/:moduleId",
   auth,
+  checkRole(["teacher", "student"]),
   eContentController.getModuleById
 );
 
