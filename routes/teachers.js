@@ -7,7 +7,7 @@ const {
 const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
-router.get("/students", auth, checkRole(["teacher"]), getStudents);
+router.get("/students", auth, checkRole(["teacher", "student"]), getStudents);
 router.post(
   "/students/:studentId/assign",
   auth,

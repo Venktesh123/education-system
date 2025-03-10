@@ -12,7 +12,7 @@ router.get("/test", (req, res) => {
 router.get(
   "/my-students",
   auth, // Authentication middleware
-  checkRole(["teacher"]), // Role check middleware
+  checkRole(["teacher", "student"]), // Role check middleware
   studentController.getMyStudents
 );
 
@@ -20,7 +20,7 @@ router.get(
 router.get(
   "/teacher/:teacherId/students",
   auth,
-  checkRole(["admin"]),
+  checkRole(["teacher", "student"]),
   studentController.getStudentsByTeacherId
 );
 

@@ -8,8 +8,18 @@ const eventController = require("../controllers/eventController");
 
 // Routes
 router.post("/", auth, checkRole(["admin"]), eventController.createEvent);
-router.get("/", auth, eventController.getAllEvents);
-router.get("/:id", auth, eventController.getEventById);
+router.get(
+  "/",
+  auth,
+  checkRole(["teacher", "student"]),
+  eventController.getAllEvents
+);
+router.get(
+  "/:id",
+  auth,
+  checkRole(["teacher", "student"]),
+  eventController.getEventById
+);
 
 router.put("/:id", auth, eventController.updateEvent);
 router.delete("/:id", auth, eventController.deleteEvent);

@@ -11,10 +11,15 @@ const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
 // Get all courses for teacher
-router.get("/", auth, getTeacherCourses);
+router.get("/", auth, checkRole(["teacher", "student"]), getTeacherCourses);
 
 // Get specific course by ID
-router.get("/:courseId", auth, checkRole(["teacher"]), getCourseById);
+router.get(
+  "/:courseId",
+  auth,
+  checkRole(["teacher", "student"]),
+  getCourseById
+);
 
 // Create new course
 router.post("/", auth, checkRole(["teacher"]), createCourse);

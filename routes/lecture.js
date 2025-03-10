@@ -15,19 +15,24 @@ const { checkRole } = require("../middleware/roleCheck");
 // Routes for individual lectures
 router.post("/:courseId", auth, checkRole("teacher"), createLecture);
 router.put("/:id", auth, checkRole("teacher"), updateLecture);
-router.get("/:lectureId", auth, getLectureById);
+router.get(
+  "/:lectureId",
+  auth,
+  checkRole(["teacher", "student"]),
+  getLectureById
+);
 
 // Routes for course lectures
 router.get(
   "/:courseId/lectures",
   auth,
-  checkRole("teacher"),
+  checkRole(["teacher", "student"]),
   getCourseLectures
 );
 router.get(
   "/:courseId/lectures/:lectureId",
   auth,
-  checkRole("teacher"),
+  checkRole(["teacher", "student"]),
   getLectureById
 );
 router.post("/:courseId/lectures", auth, checkRole("teacher"), createLecture);

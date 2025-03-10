@@ -5,6 +5,11 @@ const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
 router.post("/", auth, checkRole(["admin"]), semesterController.createSemester);
-router.get("/", auth, semesterController.getAllSemesters);
+router.get(
+  "/",
+  auth,
+  checkRole(["teacher", "student"]),
+  semesterController.getAllSemesters
+);
 
 module.exports = router;
