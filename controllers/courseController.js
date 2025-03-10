@@ -441,7 +441,6 @@ const getCourseById = async function (req, res) {
       syllabus: formattedCourse.syllabus,
       courseSchedule: formattedCourse.courseSchedule,
       attendance: formattedCourse.attendance,
-      lectures: formattedCourse.lectures,
     };
 
     // Add user-specific data
