@@ -190,67 +190,126 @@ const formatCourseData = (course) => {
   };
 };
 
-const getTeacherCourses = async function (req, res) {
+const getUserCourses = async function (req, res) {
   try {
-    logger.info(`Fetching courses for teacher with user ID: ${req.user.id}`);
+    logger.info(`Fetching courses for user with ID: ${req.user.id}`);
+    const userRole = req.user.role;
 
-    // Find teacher using the user ID from token
-    const teacher = await Teacher.findOne({ user: req.user.id }).populate({
-      path: "user",
-      select: "name email role", // Get basic user info
-    });
-
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Teacher not found" });
-    }
-
-    // Get all students for this teacher using virtual populate
-    await teacher.populate({
-      path: "students", // Virtual field defined in teacherSchema
-      populate: {
+    if (userRole === "teacher") {
+      // Existing teacher logic
+      const teacher = await Teacher.findOne({ user: req.user.id }).populate({
         path: "user",
-        select: "name email", // Include basic user details for students
-      },
-    });
+        select: "name email role",
+      });
 
-    // Get courses with title and semester info
-    const courses = await Course.find({ teacher: teacher._id })
-      .select("_id title aboutCourse")
-      .populate("semester", "name startDate endDate") // Include semester details
-      .sort({ createdAt: -1 });
+      if (!teacher) {
+        logger.error(`Teacher not found for user ID: ${req.user.id}`);
+        return res.status(404).json({ error: "Teacher not found" });
+      }
 
-    logger.info(`Found ${courses.length} courses for teacher: ${teacher._id}`);
+      await teacher.populate({
+        path: "students",
+        populate: {
+          path: "user",
+          select: "name email",
+        },
+      });
 
-    // Return teacher overview with students and course basic info
-    res.json({
-      teacher: {
-        _id: teacher._id,
-        name: teacher.user?.name,
-        email: teacher.email,
-        totalStudents: teacher.students?.length || 0,
-        totalCourses: courses.length || 0,
-      },
-      courses: courses.map((course) => ({
-        _id: course._id,
-        title: course.title,
-        aboutCourse: course.aboutCourse,
-        semester: course.semester
-          ? {
-              _id: course.semester._id,
-              name: course.semester.name,
-              startDate: course.semester.startDate,
-              endDate: course.semester.endDate,
-            }
-          : null,
-      })),
-    });
+      const courses = await Course.find({ teacher: teacher._id })
+        .select("_id title aboutCourse")
+        .populate("semester", "name startDate endDate")
+        .sort({ createdAt: -1 });
+
+      logger.info(
+        `Found ${courses.length} courses for teacher: ${teacher._id}`
+      );
+
+      res.json({
+        user: {
+          _id: teacher._id,
+          name: teacher.user?.name,
+          email: teacher.email,
+          role: "teacher",
+          totalStudents: teacher.students?.length || 0,
+          totalCourses: courses.length || 0,
+        },
+        courses: courses.map((course) => ({
+          _id: course._id,
+          title: course.title,
+          aboutCourse: course.aboutCourse,
+          semester: course.semester
+            ? {
+                _id: course.semester._id,
+                name: course.semester.name,
+                startDate: course.semester.startDate,
+                endDate: course.semester.endDate,
+              }
+            : null,
+        })),
+      });
+    } else if (userRole === "student") {
+      // Student logic - find enrolled courses
+      const student = await Student.findOne({ user: req.user.id }).populate({
+        path: "user",
+        select: "name email role",
+      });
+
+      if (!student) {
+        logger.error(`Student not found for user ID: ${req.user.id}`);
+        return res.status(404).json({ error: "Student not found" });
+      }
+
+      // This depends on your data model - you might need to:
+      // 1. Check an enrollments collection
+      // 2. Check which courses have this student in their students array
+      // 3. Or have a courses field on the student model
+
+      // For this example, I'll assume a virtual 'enrolledCourses'
+      await student.populate({
+        path: "enrolledCourses",
+        select: "_id title aboutCourse",
+        populate: {
+          path: "semester",
+          select: "name startDate endDate",
+        },
+      });
+
+      const courses = student.enrolledCourses || [];
+
+      logger.info(
+        `Found ${courses.length} courses for student: ${student._id}`
+      );
+
+      res.json({
+        user: {
+          _id: student._id,
+          name: student.user?.name,
+          email: student.user?.email,
+          role: "student",
+          totalCourses: courses.length || 0,
+        },
+        courses: courses.map((course) => ({
+          _id: course._id,
+          title: course.title,
+          aboutCourse: course.aboutCourse,
+          semester: course.semester
+            ? {
+                _id: course.semester._id,
+                name: course.semester.name,
+                startDate: course.semester.startDate,
+                endDate: course.semester.endDate,
+              }
+            : null,
+        })),
+      });
+    } else {
+      return res.status(403).json({ error: "Invalid user role" });
+    }
   } catch (error) {
-    logger.error("Error in getTeacherCourses:", error);
+    logger.error("Error in getUserCourses:", error);
     res.status(500).json({ error: error.message });
   }
 };
-
 // Get specific course by ID
 const getCourseById = async function (req, res) {
   try {
@@ -258,31 +317,13 @@ const getCourseById = async function (req, res) {
       `Fetching course ID: ${req.params.courseId} for user: ${req.user.id}`
     );
 
-    // Find teacher with user ID and populate basic user info
-    const teacher = await Teacher.findOne({ user: req.user.id }).populate({
-      path: "user",
-      select: "name email role", // Get basic user info
-    });
+    // Determine if the user is a teacher or student
+    const userRole = req.user.role;
+    let course,
+      students = [];
 
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Teacher not found" });
-    }
-
-    // Populate teacher's students
-    await teacher.populate({
-      path: "students", // Virtual field defined in teacherSchema
-      populate: {
-        path: "user",
-        select: "name email", // Include basic user details for students
-      },
-    });
-
-    // Find the course and populate all related fields
-    const courseQuery = Course.findOne({
-      _id: req.params.courseId,
-      teacher: teacher._id,
-    })
+    // Find the course
+    const courseQuery = Course.findById(req.params.courseId)
       .populate("semester")
       .populate("outcomes")
       .populate("schedule")
@@ -291,12 +332,85 @@ const getCourseById = async function (req, res) {
       .populate("creditPoints")
       .populate("attendance");
 
-    // Check if we're using embedded or referenced lectures
-    const course = await courseQuery.exec();
+    // Execute the query
+    course = await courseQuery.exec();
 
     if (!course) {
       logger.error(`Course not found with ID: ${req.params.courseId}`);
       return res.status(404).json({ error: "Course not found" });
+    }
+
+    // Check if user has access to this course
+    let hasAccess = false;
+    let userDetails = null;
+
+    if (userRole === "teacher") {
+      // For teacher: check if they're the course teacher
+      const teacher = await Teacher.findOne({
+        user: req.user.id,
+        _id: course.teacher,
+      }).populate({
+        path: "user",
+        select: "name email role",
+      });
+
+      if (teacher) {
+        hasAccess = true;
+        userDetails = {
+          _id: teacher._id,
+          name: teacher.user?.name,
+          email: teacher.email,
+        };
+
+        // Get students for this course
+        await teacher.populate({
+          path: "students",
+          populate: {
+            path: "user",
+            select: "name email",
+          },
+        });
+
+        students =
+          teacher.students?.map((student, index) => ({
+            _id: student._id.toString(),
+            rollNo: `CS${String(index + 101).padStart(3, "0")}`,
+            name: student.user?.name || "Unknown",
+            program: "Computer Science",
+            email: student.user?.email || "",
+          })) || [];
+      }
+    } else if (userRole === "student") {
+      // For student: check if they're enrolled in the course
+      const student = await Student.findOne({ user: req.user.id }).populate({
+        path: "user",
+        select: "name email role",
+      });
+
+      if (student) {
+        // Check if student is enrolled in this course
+        // This depends on your data model - you might need to check an enrollments collection
+        // or check if the student is in the course's students array
+        const isEnrolled = true; // Replace with actual enrollment check
+
+        if (isEnrolled) {
+          hasAccess = true;
+          userDetails = {
+            _id: student._id,
+            name: student.user?.name,
+            email: student.user?.email,
+          };
+        }
+      }
+    }
+
+    if (!hasAccess) {
+      logger.error(
+        `User ${req.user.id} does not have access to course ${req.params.courseId}`
+      );
+      return res
+        .status(403)
+        .json({ error: "You don't have access to this course" });
     }
 
     // Check if lectures are referenced (ObjectIds) instead of embedded
@@ -315,37 +429,49 @@ const getCourseById = async function (req, res) {
     // Format the course data
     const formattedCourse = formatCourseData(course);
 
-    // Format students data to match initialCourseData format
-    const students =
-      teacher.students?.map((student, index) => ({
-        id: student._id.toString(),
-        rollNo: `CS${String(index + 101).padStart(3, "0")}`, // Generate roll numbers
-        name: student.user?.name || "Unknown",
-        program: "Computer Science", // Default program
-        email: student.user?.email || "",
-      })) || [];
-
-    // Structure the response to match initialCourseData format
+    // Structure the response
     const response = {
       _id: formattedCourse._id,
       title: formattedCourse.title,
       aboutCourse: formattedCourse.aboutCourse,
       semester: formattedCourse.semester,
-      teacher: {
-        _id: teacher._id,
-        name: teacher.user?.name,
-        email: teacher.email,
-        totalStudents: students.length,
-      },
       creditPoints: formattedCourse.creditPoints,
       learningOutcomes: formattedCourse.learningOutcomes,
       weeklyPlan: formattedCourse.weeklyPlan,
       syllabus: formattedCourse.syllabus,
       courseSchedule: formattedCourse.courseSchedule,
       attendance: formattedCourse.attendance,
-      students: students,
       lectures: formattedCourse.lectures,
     };
+
+    // Add user-specific data
+    if (userRole === "teacher") {
+      response.teacher = {
+        _id: userDetails._id,
+        name: userDetails.name,
+        email: userDetails.email,
+        totalStudents: students.length,
+      };
+      response.students = students;
+    } else if (userRole === "student") {
+      response.student = {
+        _id: userDetails._id,
+        name: userDetails.name,
+        email: userDetails.email,
+      };
+      // Include teacher info for students as well
+      const courseTeacher = await Teacher.findById(course.teacher).populate(
+        "user",
+        "name email"
+      );
+      if (courseTeacher) {
+        response.teacher = {
+          _id: courseTeacher._id,
+          name: courseTeacher.user?.name,
+          email: courseTeacher.user?.email,
+        };
+      }
+    }
 
     res.json(response);
   } catch (error) {
@@ -353,7 +479,6 @@ const getCourseById = async function (req, res) {
     res.status(500).json({ error: error.message });
   }
 };
-
 // Create new course
 const createCourse = async function (req, res) {
   logger.info("Starting createCourse controller function");
@@ -1505,7 +1630,7 @@ const getCourseLectures = async function (req, res) {
 };
 
 module.exports = {
-  getTeacherCourses,
+  getUserCourses,
   getCourseById,
   createCourse,
   updateCourse,

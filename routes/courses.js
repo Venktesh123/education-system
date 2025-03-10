@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const {
-  getTeacherCourses,
+  getUserCourses,
   getCourseById,
   createCourse,
   updateCourse,
@@ -11,7 +11,7 @@ const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
 // Get all courses for teacher
-router.get("/", auth, checkRole(["teacher", "student"]), getTeacherCourses);
+router.get("/", auth, checkRole(["teacher", "student"]), getUserCourses);
 
 // Get specific course by ID
 router.get(
