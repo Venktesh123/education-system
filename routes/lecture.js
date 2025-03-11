@@ -8,6 +8,7 @@ const {
   deleteLecture,
   updateLectureReviewStatus,
   updateAllLectureReviewStatuses,
+  getCourseLecturesByStudents,
 } = require("../controllers/lectureController");
 const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
@@ -28,6 +29,12 @@ router.get(
   auth,
   checkRole(["teacher", "student"]),
   getCourseLectures
+);
+router.get(
+  "/student/:courseId/lectures",
+  auth,
+  checkRole(["teacher", "student"]),
+  getCourseLecturesByStudents
 );
 router.get(
   "/:courseId/lectures/:lectureId",

@@ -265,7 +265,70 @@ const updateLecture = async function (req, res) {
     res.status(400).json({ error: error.message });
   }
 };
+const getCourseLecturesByStudents = async function (req, res) {
+  try {
+    logger.info(`Fetching lectures for course ID: ${req.params.courseId}`);
 
+    // Find the student based on authenticated user
+    const student = await Student.findOne({ user: req.user.id });
+    if (!student) {
+      logger.error(`Student not found for user ID: ${req.user.id}`);
+      return res.status(404).json({ error: "Student not found" });
+    }
+
+    // Find the course by ID
+    const course = await Course.findById(req.params.courseId);
+    if (!course) {
+      logger.error(`Course not found with ID: ${req.params.courseId}`);
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    // Check if student is enrolled in this course
+    if (!student.courses.includes(course._id)) {
+      logger.error(
+        `Student is not enrolled in course with ID: ${req.params.courseId}`
+      );
+      return res
+        .status(403)
+        .json({ error: "You are not enrolled in this course" });
+    }
+
+    // Find all lectures for this course
+    const lectures = await Lecture.find({
+      course: course._id,
+      // Add any additional criteria like isPublished if needed
+    }).select("title content videoUrl isReviewed createdAt updatedAt");
+
+    // Check for lectures that have passed their review deadline
+    const now = new Date();
+    const updatePromises = lectures.map(async (lecture) => {
+      if (
+        !lecture.isReviewed &&
+        lecture.reviewDeadline &&
+        now >= lecture.reviewDeadline
+      ) {
+        lecture.isReviewed = true;
+        await lecture.save();
+      }
+      return lecture;
+    });
+
+    // Wait for all updates to complete
+    await Promise.all(updatePromises);
+
+    // Re-fetch lectures to get updated data if needed
+    const updatedLectures = await Lecture.find({
+      course: course._id,
+      // Add any additional criteria if needed
+    }).select("title content videoUrl isReviewed createdAt updatedAt");
+
+    // Return the complete lecture information
+    res.json(updatedLectures);
+  } catch (error) {
+    logger.error("Error in getCourseLectures:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
 // Get all lectures for a course
 const getCourseLectures = async function (req, res) {
   try {
@@ -575,4 +638,5 @@ module.exports = {
   deleteLecture,
   updateLectureReviewStatus,
   updateAllLectureReviewStatuses,
+  getCourseLecturesByStudents,
 };
