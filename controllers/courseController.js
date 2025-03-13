@@ -190,6 +190,85 @@ const formatCourseData = (course) => {
   };
 };
 
+const getEnrolledCourses = async function (req, res) {
+  try {
+    logger.info(
+      `Fetching enrolled courses for student with ID: ${req.user.id}`
+    );
+
+    // Verify user is a student
+    if (req.user.role !== "student") {
+      logger.error(`User ${req.user.id} is not a student`);
+      return res
+        .status(403)
+        .json({ error: "Access denied. Student role required" });
+    }
+
+    // Find the student
+    const student = await Student.findOne({ user: req.user.id }).populate({
+      path: "user",
+      select: "name email role",
+    });
+
+    if (!student) {
+      logger.error(`Student not found for user ID: ${req.user.id}`);
+      return res.status(404).json({ error: "Student not found" });
+    }
+
+    // Extract course IDs from the student document
+    const courseIds = student.courses || [];
+
+    if (courseIds.length === 0) {
+      logger.info(`Student ${student._id} is not enrolled in any courses`);
+      return res.json({
+        user: {
+          _id: student._id,
+          name: student.user?.name,
+          email: student.user?.email,
+          role: "student",
+          totalCourses: 0,
+        },
+        courses: [],
+      });
+    }
+
+    // Fetch courses using the IDs from student.courses
+    const courses = await Course.find({ _id: { $in: courseIds } })
+      .select("_id title aboutCourse")
+      .populate("semester", "name startDate endDate")
+      .sort({ createdAt: -1 });
+
+    logger.info(
+      `Found ${courses.length} enrolled courses for student: ${student._id}`
+    );
+
+    res.json({
+      user: {
+        _id: student._id,
+        name: student.user?.name,
+        email: student.user?.email,
+        role: "student",
+        totalCourses: courses.length || 0,
+      },
+      courses: courses.map((course) => ({
+        _id: course._id,
+        title: course.title,
+        aboutCourse: course.aboutCourse,
+        semester: course.semester
+          ? {
+              _id: course.semester._id,
+              name: course.semester.name,
+              startDate: course.semester.startDate,
+              endDate: course.semester.endDate,
+            }
+          : null,
+      })),
+    });
+  } catch (error) {
+    logger.error("Error in getEnrolledCourses:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
 const getUserCourses = async function (req, res) {
   try {
     logger.info(`Fetching courses for user with ID: ${req.user.id}`);
@@ -1639,4 +1718,5 @@ module.exports = {
   updateCourseLecture,
   deleteCourseLecture,
   getCourseLectures,
+  getEnrolledCourses,
 };
