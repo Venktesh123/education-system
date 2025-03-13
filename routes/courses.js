@@ -6,12 +6,19 @@ const {
   createCourse,
   updateCourse,
   deleteCourse,
+  getEnrolledCourses,
 } = require("../controllers/courseController");
 const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
 // Get all courses for teacher
 router.get("/", auth, checkRole(["teacher", "student"]), getUserCourses);
+router.get(
+  "/student",
+  auth,
+  checkRole(["teacher", "student"]),
+  getEnrolledCourses
+);
 
 // Get specific course by ID
 router.get(
