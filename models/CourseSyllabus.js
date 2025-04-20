@@ -1,5 +1,29 @@
 const mongoose = require("mongoose");
 
+const resourceSchema = new mongoose.Schema({
+  fileType: {
+    type: String,
+    enum: ["pdf", "ppt", "pptx", "other"],
+    required: true,
+  },
+  fileUrl: {
+    type: String,
+    required: true,
+  },
+  fileKey: {
+    type: String,
+    required: true,
+  },
+  fileName: {
+    type: String,
+    required: true,
+  },
+  uploadDate: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
 const moduleSchema = new mongoose.Schema({
   moduleNumber: {
     type: Number,
@@ -15,6 +39,12 @@ const moduleSchema = new mongoose.Schema({
       required: true,
     },
   ],
+  // New fields for syllabus content
+  link: {
+    type: String,
+    default: "",
+  },
+  resources: [resourceSchema],
 });
 
 const courseSyllabusSchema = new mongoose.Schema(
