@@ -7,6 +7,7 @@ const CourseSchedule = require("../models/CourseSchedule");
 const CourseSyllabus = require("../models/CourseSyllabus");
 const WeeklyPlan = require("../models/WeeklyPlan");
 const CreditPoints = require("../models/CreditPoints");
+const Assignment = require("../models/Assignment");
 const CourseAttendance = require("../models/CourseAttendance");
 const mongoose = require("mongoose");
 const AWS = require("aws-sdk");
@@ -275,7 +276,7 @@ const getUserCourses = async function (req, res) {
     const userRole = req.user.role;
 
     if (userRole === "teacher") {
-      // Existing teacher logic
+      // Fetch teacher data
       const teacher = await Teacher.findOne({ user: req.user.id }).populate({
         path: "user",
         select: "name email role",
@@ -294,13 +295,71 @@ const getUserCourses = async function (req, res) {
         },
       });
 
+      // Find courses taught by this teacher
       const courses = await Course.find({ teacher: teacher._id })
         .select("_id title aboutCourse")
         .populate("semester", "name startDate endDate")
+        .populate("schedule") // Add populate for schedule
         .sort({ createdAt: -1 });
 
       logger.info(
         `Found ${courses.length} courses for teacher: ${teacher._id}`
+      );
+
+      // Fetch assignment and lecture counts for each course
+      const coursesWithCounts = await Promise.all(
+        courses.map(async (course) => {
+          // Get assignment count for this course
+          let assignmentCount = 0;
+          try {
+            assignmentCount = await Assignment.countDocuments({
+              course: course._id,
+            });
+          } catch (err) {
+            logger.error(
+              `Error counting assignments for course ${course._id}:`,
+              err
+            );
+          }
+
+          // Get lecture count for this course
+          let lectureCount = 0;
+          try {
+            lectureCount = await Lecture.countDocuments({ course: course._id });
+          } catch (err) {
+            logger.error(
+              `Error counting lectures for course ${course._id}:`,
+              err
+            );
+          }
+
+          return {
+            _id: course._id,
+            title: course.title,
+            aboutCourse: course.aboutCourse,
+            semester: course.semester
+              ? {
+                  _id: course.semester._id,
+                  name: course.semester.name,
+                  startDate: course.semester.startDate,
+                  endDate: course.semester.endDate,
+                }
+              : null,
+            // Add schedule data to the response
+            schedule: course.schedule
+              ? {
+                  _id: course.schedule._id,
+                  classStartDate: course.schedule.classStartDate,
+                  classEndDate: course.schedule.classEndDate,
+                  midSemesterExamDate: course.schedule.midSemesterExamDate,
+                  endSemesterExamDate: course.schedule.endSemesterExamDate,
+                  classDaysAndTimes: course.schedule.classDaysAndTimes || [],
+                }
+              : null,
+            assignmentCount: assignmentCount,
+            lectureCount: lectureCount,
+          };
+        })
       );
 
       res.json({
@@ -312,22 +371,10 @@ const getUserCourses = async function (req, res) {
           totalStudents: teacher.students?.length || 0,
           totalCourses: courses.length || 0,
         },
-        courses: courses.map((course) => ({
-          _id: course._id,
-          title: course.title,
-          aboutCourse: course.aboutCourse,
-          semester: course.semester
-            ? {
-                _id: course.semester._id,
-                name: course.semester.name,
-                startDate: course.semester.startDate,
-                endDate: course.semester.endDate,
-              }
-            : null,
-        })),
+        courses: coursesWithCounts,
       });
     } else if (userRole === "student") {
-      // Student logic - find enrolled courses
+      // Find student profile
       const student = await Student.findOne({ user: req.user.id }).populate({
         path: "user",
         select: "name email role",
@@ -338,25 +385,89 @@ const getUserCourses = async function (req, res) {
         return res.status(404).json({ error: "Student not found" });
       }
 
-      // This depends on your data model - you might need to:
-      // 1. Check an enrollments collection
-      // 2. Check which courses have this student in their students array
-      // 3. Or have a courses field on the student model
+      // Find courses the student is enrolled in
+      const courseIds = student.courses || [];
 
-      // For this example, I'll assume a virtual 'enrolledCourses'
-      await student.populate({
-        path: "enrolledCourses",
-        select: "_id title aboutCourse",
-        populate: {
-          path: "semester",
-          select: "name startDate endDate",
-        },
-      });
+      if (courseIds.length === 0) {
+        return res.json({
+          user: {
+            _id: student._id,
+            name: student.user?.name,
+            email: student.user?.email,
+            role: "student",
+            totalCourses: 0,
+          },
+          courses: [],
+        });
+      }
 
-      const courses = student.enrolledCourses || [];
+      const courses = await Course.find({ _id: { $in: courseIds } })
+        .select("_id title aboutCourse")
+        .populate("semester", "name startDate endDate")
+        .populate("schedule") // Add populate for schedule
+        .sort({ createdAt: -1 });
 
       logger.info(
         `Found ${courses.length} courses for student: ${student._id}`
+      );
+
+      // Fetch assignment and lecture counts for each course
+      const coursesWithCounts = await Promise.all(
+        courses.map(async (course) => {
+          // Get assignment count for this course
+          let assignmentCount = 0;
+          try {
+            assignmentCount = await Assignment.countDocuments({
+              course: course._id,
+            });
+          } catch (err) {
+            logger.error(
+              `Error counting assignments for course ${course._id}:`,
+              err
+            );
+          }
+
+          // Get lecture count for this course (only reviewed ones for students)
+          let lectureCount = 0;
+          try {
+            lectureCount = await Lecture.countDocuments({
+              course: course._id,
+              isReviewed: true,
+            });
+          } catch (err) {
+            logger.error(
+              `Error counting lectures for course ${course._id}:`,
+              err
+            );
+          }
+
+          return {
+            _id: course._id,
+            title: course.title,
+            aboutCourse: course.aboutCourse,
+            semester: course.semester
+              ? {
+                  _id: course.semester._id,
+                  name: course.semester.name,
+                  startDate: course.semester.startDate,
+                  endDate: course.semester.endDate,
+                }
+              : null,
+            // Add schedule data to the response
+            schedule: course.schedule
+              ? {
+                  _id: course.schedule._id,
+                  classStartDate: course.schedule.classStartDate,
+                  classEndDate: course.schedule.classEndDate,
+                  midSemesterExamDate: course.schedule.midSemesterExamDate,
+                  endSemesterExamDate: course.schedule.endSemesterExamDate,
+                  classDaysAndTimes: course.schedule.classDaysAndTimes || [],
+                }
+              : null,
+            assignmentCount: assignmentCount,
+            lectureCount: lectureCount,
+          };
+        })
       );
 
       res.json({
@@ -367,19 +478,7 @@ const getUserCourses = async function (req, res) {
           role: "student",
           totalCourses: courses.length || 0,
         },
-        courses: courses.map((course) => ({
-          _id: course._id,
-          title: course.title,
-          aboutCourse: course.aboutCourse,
-          semester: course.semester
-            ? {
-                _id: course.semester._id,
-                name: course.semester.name,
-                startDate: course.semester.startDate,
-                endDate: course.semester.endDate,
-              }
-            : null,
-        })),
+        courses: coursesWithCounts,
       });
     } else {
       return res.status(403).json({ error: "Invalid user role" });
