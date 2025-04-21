@@ -190,21 +190,17 @@ exports.createAnnouncement = catchAsyncErrors(async (req, res, next) => {
 });
 
 // Get all announcements for a course
+// Get all announcements for a course
+// Get all announcements for a course
+// Get all announcements for a course
 exports.getCourseAnnouncements = catchAsyncErrors(async (req, res, next) => {
   console.log("getCourseAnnouncements: Started");
   const { courseId } = req.params;
 
   console.log(`Fetching announcements for course: ${courseId}`);
 
-  // Check if course exists
-  const course = await Course.findById(courseId);
-  if (!course) {
-    console.log(`Course not found: ${courseId}`);
-    return next(new ErrorHandler("Course not found", 404));
-  }
-
   // Find announcements
-  const announcements = await Announcement.find({
+  let announcements = await Announcement.find({
     course: courseId,
     isActive: true,
   })
@@ -213,7 +209,7 @@ exports.getCourseAnnouncements = catchAsyncErrors(async (req, res, next) => {
       path: "publishedBy",
       populate: {
         path: "user",
-        select: "name email",
+        select: "name email", // Explicitly select only these fields from user
       },
     });
 
@@ -221,19 +217,38 @@ exports.getCourseAnnouncements = catchAsyncErrors(async (req, res, next) => {
     console.log(`No announcements found for course: ${courseId}`);
     return res.status(200).json({
       success: true,
-      courseId: courseId,
       announcements: [],
     });
   }
 
+  // Deep transform to remove courses field from publishedBy object
+  const transformedAnnouncements = announcements.map((announcement) => {
+    const obj = announcement.toObject();
+
+    // If there's a publishedBy field with a courses array, remove it
+    if (obj.publishedBy && obj.publishedBy.courses) {
+      delete obj.publishedBy.courses;
+    }
+
+    // Also handle if publishedBy.user has courses
+    if (
+      obj.publishedBy &&
+      obj.publishedBy.user &&
+      obj.publishedBy.user.courses
+    ) {
+      delete obj.publishedBy.user.courses;
+    }
+
+    return obj;
+  });
+
   res.status(200).json({
     success: true,
-    courseId: courseId,
-    count: announcements.length,
-    announcements,
+    count: transformedAnnouncements.length,
+    announcements: transformedAnnouncements,
   });
 });
-
+// Get specific announcement by ID
 // Get specific announcement by ID
 exports.getAnnouncementById = catchAsyncErrors(async (req, res, next) => {
   console.log("getAnnouncementById: Started");
@@ -262,7 +277,6 @@ exports.getAnnouncementById = catchAsyncErrors(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    courseId: courseId,
     announcement,
   });
 });
