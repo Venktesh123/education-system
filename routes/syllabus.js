@@ -52,12 +52,14 @@ router.delete(
   syllabusController.deleteContentItem
 );
 
-// Legacy routes for backward compatibility
+// Remove this route since deleteResource is not defined in your controller
+/* 
 router.delete(
   "/course/:courseId/syllabus/module/:moduleId/resource/:resourceId",
   auth,
   checkRole(["teacher"]),
   syllabusController.deleteResource
 );
+*/
 
 module.exports = router;
