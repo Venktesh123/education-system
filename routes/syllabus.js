@@ -20,7 +20,7 @@ router.get(
   syllabusController.getModuleById
 );
 
-// Update a module with resources (links, PDFs, PPTs)
+// Update a module (basic info) - PUT request to update module info only
 router.put(
   "/course/:courseId/syllabus/module/:moduleId",
   auth,
@@ -28,7 +28,31 @@ router.put(
   syllabusController.updateModule
 );
 
-// Delete a specific resource from a module
+// Add content to module - POST request to add content
+router.post(
+  "/course/:courseId/syllabus/module/:moduleId/content",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.addModuleContent
+);
+
+// Update content item - PUT request to update existing content
+router.put(
+  "/course/:courseId/syllabus/module/:moduleId/content/:contentId",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.updateContentItem
+);
+
+// Delete content item
+router.delete(
+  "/course/:courseId/syllabus/module/:moduleId/content/:contentId",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.deleteContentItem
+);
+
+// Legacy routes for backward compatibility
 router.delete(
   "/course/:courseId/syllabus/module/:moduleId/resource/:resourceId",
   auth,
