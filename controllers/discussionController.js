@@ -83,20 +83,16 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
     transactionStarted = true;
     console.log("Transaction started");
 
-    const { title, content, type } = req.body;
+    const { title, content } = req.body;
     let { courseId } = req.params;
 
-    // Validate inputs
-    if (!title || !content || !type) {
-      console.log("Missing required fields");
-      return next(
-        new ErrorHandler("Title, content, and type are required", 400)
-      );
-    }
+    // Determine discussion type based on route and courseId
+    const type = courseId ? "course" : "teacher";
 
-    if (!["teacher", "course"].includes(type)) {
-      console.log("Invalid discussion type:", type);
-      return next(new ErrorHandler("Invalid discussion type", 400));
+    // Validate inputs
+    if (!title || !content) {
+      console.log("Missing required fields");
+      return next(new ErrorHandler("Title and content are required", 400));
     }
 
     // Find the teacher
@@ -109,15 +105,14 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
     }
 
     // For course discussions, validate course
-    if (type === "course" && !courseId) {
-      console.log("Course ID required for course discussions");
-      return next(
-        new ErrorHandler("Course ID is required for course discussions", 400)
-      );
-    }
-
-    // If it's a course discussion, verify the teacher owns the course
     if (type === "course") {
+      if (!courseId) {
+        console.log("Course ID required for course discussions");
+        return next(
+          new ErrorHandler("Course ID is required for course discussions", 400)
+        );
+      }
+
       const course = await Course.findOne({
         _id: courseId,
         teacher: teacher._id,
