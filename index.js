@@ -57,6 +57,7 @@ app.use("/api/econtent", require("./routes/econtent"));
 app.use("/api/students", require("./routes/getStudents"));
 app.use("/api/announcement", require("./routes/announcement"));
 app.use("/api/syllabus", require("./routes/syllabus"));
+app.use("/api/discussion", require("./routes/discussion"));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
