@@ -31,7 +31,7 @@ router.get(
 router.post(
   "/course/:courseId",
   auth,
-  checkRole(["teacher"]),
+  checkRole(["teacher", "student"]),
   discussionController.createDiscussion
 );
 
@@ -86,7 +86,7 @@ router.delete(
 router.put(
   "/:discussionId",
   auth,
-  checkRole(["teacher"]),
+  checkRole(["teacher", "student"]),
   discussionController.updateDiscussion
 );
 
@@ -94,7 +94,7 @@ router.put(
 router.delete(
   "/:discussionId",
   auth,
-  checkRole(["teacher", "admin"]),
+  checkRole(["teacher", "admin", "student"]),
   discussionController.deleteDiscussion
 );
 
