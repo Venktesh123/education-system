@@ -12,7 +12,7 @@ const submissionSchema = new mongoose.Schema({
     default: Date.now,
   },
   submissionFile: {
-    type: String, // URL or path to the file
+    type: String,
     required: true,
   },
   grade: {

@@ -235,8 +235,20 @@ const getEnrolledCourses = async function (req, res) {
 
     // Fetch courses using the IDs from student.courses
     const courses = await Course.find({ _id: { $in: courseIds } })
-      .select("_id title aboutCourse")
-      .populate("semester", "name startDate endDate")
+      .select("_id title assignments attendance")
+      .populate({
+        path: "assignments",
+        select: "_id title description dueDate totalPoints isActive submissions",
+        populate: {
+          path: "submissions",
+          match: { student: student._id }, // Only include submissions by this student
+          select: "_id submissionDate submissionFile grade feedback status",
+        },
+      })
+      .populate({
+        path: "attendance",
+        select: "sessions",
+      })
       .sort({ createdAt: -1 });
 
     logger.info(
@@ -254,15 +266,25 @@ const getEnrolledCourses = async function (req, res) {
       courses: courses.map((course) => ({
         _id: course._id,
         title: course.title,
-        aboutCourse: course.aboutCourse,
-        semester: course.semester
-          ? {
-              _id: course.semester._id,
-              name: course.semester.name,
-              startDate: course.semester.startDate,
-              endDate: course.semester.endDate,
-            }
-          : null,
+        assignments: course.assignments.map((assignment) => ({
+          _id: assignment._id,
+          title: assignment.title,
+          description: assignment.description,
+          dueDate: assignment.dueDate,
+          totalPoints: assignment.totalPoints,
+          isActive: assignment.isActive,
+          submissions: assignment.submissions.map((submission) => ({
+            _id: submission._id,
+            submissionDate: submission.submissionDate,
+            submissionFile: submission.submissionFile,
+            grade: submission.grade,
+            feedback: submission.feedback,
+            status: submission.status,
+          })),
+        })),
+        attendance: course.attendance
+          ? Object.fromEntries(course.attendance.sessions)
+          : {}, // Convert Map to plain object
       })),
     });
   } catch (error) {
@@ -270,6 +292,7 @@ const getEnrolledCourses = async function (req, res) {
     res.status(500).json({ error: error.message });
   }
 };
+
 const getUserCourses = async function (req, res) {
   try {
     logger.info(`Fetching courses for user with ID: ${req.user.id}`);
