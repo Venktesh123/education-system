@@ -287,80 +287,53 @@ const getUserCourses = async function (req, res) {
         return res.status(404).json({ error: "Teacher not found" });
       }
 
-      await teacher.populate({
-        path: "students",
-        populate: {
-          path: "user",
-          select: "name email",
-        },
-      });
-
       // Find courses taught by this teacher
       const courses = await Course.find({ teacher: teacher._id })
-        .select("_id title aboutCourse")
-        .populate("semester", "name startDate endDate")
-        .populate("schedule") // Add populate for schedule
+        .select("_id title aboutCourse assignments attendance schedule semester")
+        .populate("assignments", "_id title description dueDate totalPoints isActive")
+        .populate("attendance", "sessions")
+        .populate("schedule", "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes")
+        .populate("semester", "_id name startDate endDate")
         .sort({ createdAt: -1 });
 
-      logger.info(
-        `Found ${courses.length} courses for teacher: ${teacher._id}`
-      );
+      logger.info(`Found ${courses.length} courses for teacher: ${teacher._id}`);
 
-      // Fetch assignment and lecture counts for each course
-      const coursesWithCounts = await Promise.all(
-        courses.map(async (course) => {
-          // Get assignment count for this course
-          let assignmentCount = 0;
-          try {
-            assignmentCount = await Assignment.countDocuments({
-              course: course._id,
-            });
-          } catch (err) {
-            logger.error(
-              `Error counting assignments for course ${course._id}:`,
-              err
-            );
-          }
-
-          // Get lecture count for this course
-          let lectureCount = 0;
-          try {
-            lectureCount = await Lecture.countDocuments({ course: course._id });
-          } catch (err) {
-            logger.error(
-              `Error counting lectures for course ${course._id}:`,
-              err
-            );
-          }
-
-          return {
-            _id: course._id,
-            title: course.title,
-            aboutCourse: course.aboutCourse,
-            semester: course.semester
-              ? {
-                  _id: course.semester._id,
-                  name: course.semester.name,
-                  startDate: course.semester.startDate,
-                  endDate: course.semester.endDate,
-                }
-              : null,
-            // Add schedule data to the response
-            schedule: course.schedule
-              ? {
-                  _id: course.schedule._id,
-                  classStartDate: course.schedule.classStartDate,
-                  classEndDate: course.schedule.classEndDate,
-                  midSemesterExamDate: course.schedule.midSemesterExamDate,
-                  endSemesterExamDate: course.schedule.endSemesterExamDate,
-                  classDaysAndTimes: course.schedule.classDaysAndTimes || [],
-                }
-              : null,
-            assignmentCount: assignmentCount,
-            lectureCount: lectureCount,
-          };
-        })
-      );
+      const coursesWithAdditionalData = courses.map((course) => ({
+        _id: course._id,
+        title: course.title,
+        aboutCourse: course.aboutCourse,
+        semester: course.semester
+          ? {
+              _id: course.semester._id,
+              name: course.semester.name,
+              startDate: course.semester.startDate,
+              endDate: course.semester.endDate,
+            }
+          : null,
+        schedule: course.schedule
+          ? {
+              _id: course.schedule._id,
+              classStartDate: course.schedule.classStartDate,
+              classEndDate: course.schedule.classEndDate,
+              midSemesterExamDate: course.schedule.midSemesterExamDate,
+              endSemesterExamDate: course.schedule.endSemesterExamDate,
+              classDaysAndTimes: course.schedule.classDaysAndTimes || [],
+            }
+          : null,
+        assignmentCount: course.assignments.length,
+        lectureCount: course.lectures ? course.lectures.length : 0,
+        assignments: course.assignments.map((assignment) => ({
+          _id: assignment._id,
+          title: assignment.title,
+          description: assignment.description,
+          dueDate: assignment.dueDate,
+          totalPoints: assignment.totalPoints,
+          isActive: assignment.isActive,
+        })),
+        attendance: course.attendance
+          ? Object.fromEntries(course.attendance.sessions)
+          : {},
+      }));
 
       res.json({
         user: {
@@ -368,13 +341,12 @@ const getUserCourses = async function (req, res) {
           name: teacher.user?.name,
           email: teacher.email,
           role: "teacher",
-          totalStudents: teacher.students?.length || 0,
           totalCourses: courses.length || 0,
         },
-        courses: coursesWithCounts,
+        courses: coursesWithAdditionalData,
       });
     } else if (userRole === "student") {
-      // Find student profile
+      // Fetch student data
       const student = await Student.findOne({ user: req.user.id }).populate({
         path: "user",
         select: "name email role",
@@ -402,73 +374,64 @@ const getUserCourses = async function (req, res) {
       }
 
       const courses = await Course.find({ _id: { $in: courseIds } })
-        .select("_id title aboutCourse")
-        .populate("semester", "name startDate endDate")
-        .populate("schedule") // Add populate for schedule
+        .select("_id title aboutCourse assignments attendance schedule semester")
+        .populate("assignments", "_id title description dueDate totalPoints isActive submissions")
+        .populate({
+          path: "assignments.submissions",
+          match: { student: student._id },
+          select: "_id submissionDate submissionFile grade feedback status",
+        })
+        .populate("attendance", "sessions")
+        .populate("schedule", "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes")
+        .populate("semester", "_id name startDate endDate")
         .sort({ createdAt: -1 });
 
-      logger.info(
-        `Found ${courses.length} courses for student: ${student._id}`
-      );
+      logger.info(`Found ${courses.length} courses for student: ${student._id}`);
 
-      // Fetch assignment and lecture counts for each course
-      const coursesWithCounts = await Promise.all(
-        courses.map(async (course) => {
-          // Get assignment count for this course
-          let assignmentCount = 0;
-          try {
-            assignmentCount = await Assignment.countDocuments({
-              course: course._id,
-            });
-          } catch (err) {
-            logger.error(
-              `Error counting assignments for course ${course._id}:`,
-              err
-            );
-          }
-
-          // Get lecture count for this course (only reviewed ones for students)
-          let lectureCount = 0;
-          try {
-            lectureCount = await Lecture.countDocuments({
-              course: course._id,
-              isReviewed: true,
-            });
-          } catch (err) {
-            logger.error(
-              `Error counting lectures for course ${course._id}:`,
-              err
-            );
-          }
-
-          return {
-            _id: course._id,
-            title: course.title,
-            aboutCourse: course.aboutCourse,
-            semester: course.semester
-              ? {
-                  _id: course.semester._id,
-                  name: course.semester.name,
-                  startDate: course.semester.startDate,
-                  endDate: course.semester.endDate,
-                }
-              : null,
-            // Add schedule data to the response
-            schedule: course.schedule
-              ? {
-                  _id: course.schedule._id,
-                  classStartDate: course.schedule.classStartDate,
-                  classEndDate: course.schedule.classEndDate,
-                  midSemesterExamDate: course.schedule.midSemesterExamDate,
-                  endSemesterExamDate: course.schedule.endSemesterExamDate,
-                  classDaysAndTimes: course.schedule.classDaysAndTimes || [],
-                }
-              : null,
-            assignmentCount: assignmentCount,
-            lectureCount: lectureCount,
-          };
-        })
-      );
+      const coursesWithAdditionalData = courses.map((course) => ({
+        _id: course._id,
+        title: course.title,
+        aboutCourse: course.aboutCourse,
+        semester: course.semester
+          ? {
+              _id: course.semester._id,
+              name: course.semester.name,
+              startDate: course.semester.startDate,
+              endDate: course.semester.endDate,
+            }
+          : null,
+        schedule: course.schedule
+          ? {
+              _id: course.schedule._id,
+              classStartDate: course.schedule.classStartDate,
+              classEndDate: course.schedule.classEndDate,
+              midSemesterExamDate: course.schedule.midSemesterExamDate,
+              endSemesterExamDate: course.schedule.endSemesterExamDate,
+              classDaysAndTimes: course.schedule.classDaysAndTimes || [],
+            }
+          : null,
+        assignmentCount: course.assignments.length,
+        lectureCount: course.lectures ? course.lectures.length : 0,
+        assignments: course.assignments.map((assignment) => ({
+          _id: assignment._id,
+          title: assignment.title,
+          description: assignment.description,
+          dueDate: assignment.dueDate,
+          totalPoints: assignment.totalPoints,
+          isActive: assignment.isActive,
+          submissions: assignment.submissions.map((submission) => ({
+            _id: submission._id,
+            submissionDate: submission.submissionDate,
+            submissionFile: submission.submissionFile,
+            grade: submission.grade,
+            feedback: submission.feedback,
+            status: submission.status,
+          })),
+        })),
+        attendance: course.attendance
+          ? Object.fromEntries(course.attendance.sessions)
+          : {},
+      }));
 
       res.json({
         user: {
@@ -478,7 +441,7 @@ const getUserCourses = async function (req, res) {
           role: "student",
           totalCourses: courses.length || 0,
         },
-        courses: coursesWithCounts,
+        courses: coursesWithAdditionalData,
       });
     } else {
       return res.status(403).json({ error: "Invalid user role" });
