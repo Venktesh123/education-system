@@ -30,7 +30,7 @@ const submissionSchema = new mongoose.Schema({
   },
 });
 
-const assignmentSchema = new mongoose.Schema(
+const activitySchema = new mongoose.Schema(
   {
     title: {
       type: String,
@@ -64,9 +64,15 @@ const assignmentSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    links: [
+      {
+        name: String,
+        url: String,
+      },
+    ],
   },
 
   { timestamps: true }
 );
 
-module.exports = mongoose.model("Assignment", assignmentSchema);
+module.exports = mongoose.model("Activity", activitySchema);
