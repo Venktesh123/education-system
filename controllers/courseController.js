@@ -290,7 +290,7 @@ const getUserCourses = async function (req, res) {
       // Find courses taught by this teacher
       const courses = await Course.find({ teacher: teacher._id })
         .select("_id title aboutCourse assignments attendance schedule semester")
-        .populate("assignments", "_id title description dueDate totalPoints isActive")
+        .populate("assignments", "_id title description dueDate totalPoints isActive submissions")
         .populate("attendance", "sessions")
         .populate("schedule", "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes")
         .populate("semester", "_id name startDate endDate")
@@ -329,6 +329,15 @@ const getUserCourses = async function (req, res) {
           dueDate: assignment.dueDate,
           totalPoints: assignment.totalPoints,
           isActive: assignment.isActive,
+          submissions: assignment.submissions.map((submission) => ({
+            _id: submission._id,
+            student: submission.student, // Include student ID
+            submissionDate: submission.submissionDate,
+            submissionFile: submission.submissionFile,
+            grade: submission.grade,
+            feedback: submission.feedback,
+            status: submission.status,
+          })),
         })),
         attendance: course.attendance
           ? Object.fromEntries(course.attendance.sessions)
@@ -379,7 +388,7 @@ const getUserCourses = async function (req, res) {
         .populate({
           path: "assignments.submissions",
           match: { student: student._id },
-          select: "_id submissionDate submissionFile grade feedback status",
+          select: "_id student submissionDate submissionFile grade feedback status",
         })
         .populate("attendance", "sessions")
         .populate("schedule", "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes")
@@ -421,6 +430,7 @@ const getUserCourses = async function (req, res) {
           isActive: assignment.isActive,
           submissions: assignment.submissions.map((submission) => ({
             _id: submission._id,
+            student: submission.student, // Include student ID
             submissionDate: submission.submissionDate,
             submissionFile: submission.submissionFile,
             grade: submission.grade,

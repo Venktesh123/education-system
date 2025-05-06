@@ -53,6 +53,7 @@ app.use("/api/students", require("./routes/students"));
 app.use("/api/teachers", require("./routes/teachers"));
 app.use("/api/events", require("./routes/event"));
 app.use("/api/assignment", require("./routes/assignment"));
+app.use("/api/activity", require("./routes/activity"));
 app.use("/api/econtent", require("./routes/econtent"));
 app.use("/api/students", require("./routes/getStudents"));
 app.use("/api/announcement", require("./routes/announcement"));
