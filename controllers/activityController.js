@@ -64,13 +64,13 @@ exports.createActivity = catchAsyncErrors(async (req, res, next) => {
     transactionStarted = true;
     console.log("Transaction started");
 
-    const { title, description, dueDate, totalPoints } = req.body;
+    const { title, description, dueDate, totalPoints, links } = req.body;
     const { courseId } = req.params; // Extract courseId from URL
 
     console.log(`Creating activity for course: ${courseId}`);
 
     // Validate inputs
-    if (!title || !description || !dueDate || !totalPoints) {
+    if (!title || !description || !dueDate || !totalPoints ) {
       console.log("Missing required fields");
       return next(new ErrorHandler("All fields are required", 400));
     }
@@ -91,6 +91,7 @@ exports.createActivity = catchAsyncErrors(async (req, res, next) => {
       dueDate,
       totalPoints,
       isActive: true, // Default value
+      links: links || [], 
     });
 
     // Handle file uploads if any
@@ -660,7 +661,7 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
     console.log("Teacher authorized for course:", course._id);
 
     // Extract update fields
-    const { title, description, dueDate, totalPoints, isActive } = req.body;
+    const { title, description, dueDate, totalPoints, isActive, links } = req.body;
 
     // Update activity fields if provided
     if (title) activity.title = title;
@@ -668,6 +669,7 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
     if (dueDate) activity.dueDate = dueDate;
     if (totalPoints) activity.totalPoints = totalPoints;
     if (isActive !== undefined) activity.isActive = isActive;
+    if (links?.length !== 0 ) activity.links = links;
 
     // Handle file uploads if any
     if (req.files && req.files.attachments) {
