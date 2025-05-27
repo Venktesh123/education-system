@@ -85,7 +85,7 @@ const deleteFileFromS3 = async (key) => {
   });
 };
 
-// Helper function to format course data with module-based lectures
+// Enhanced helper function to format course data with module-based lectures
 const formatCourseData = async (course) => {
   // Convert Map to object for attendance sessions
   const attendanceSessions = {};
@@ -104,40 +104,82 @@ const formatCourseData = async (course) => {
       isActive: true,
     }).sort({ moduleNumber: 1, lectureOrder: 1 });
 
-    // Organize lectures by modules
-    modulesWithLectures = course.syllabus.modules.map((module) => {
-      const moduleLectures = allLectures.filter(
-        (lecture) => lecture.syllabusModule.toString() === module._id.toString()
-      );
-
-      return {
-        _id: module._id,
-        moduleNumber: module.moduleNumber,
-        moduleTitle: module.moduleTitle,
-        description: module.description,
-        topics: module.topics,
-        isActive: module.isActive,
-        lectures: moduleLectures.map((lecture) => ({
-          _id: lecture._id,
-          title: lecture.title,
-          content: lecture.content,
-          videoUrl: lecture.videoUrl,
-          lectureOrder: lecture.lectureOrder,
-          isReviewed: lecture.isReviewed,
-          reviewDeadline: lecture.reviewDeadline,
-          createdAt: lecture.createdAt,
-          updatedAt: lecture.updatedAt,
-        })),
-        lectureCount: moduleLectures.length,
-      };
+    // Check for lectures that have passed their review deadline
+    const now = new Date();
+    const updatePromises = allLectures.map(async (lecture) => {
+      if (
+        !lecture.isReviewed &&
+        lecture.reviewDeadline &&
+        now >= lecture.reviewDeadline
+      ) {
+        lecture.isReviewed = true;
+        await lecture.save();
+      }
+      return lecture;
     });
+
+    const updatedLectures = await Promise.all(updatePromises);
+
+    // Organize lectures by modules with enhanced structure
+    modulesWithLectures = course.syllabus.modules
+      .map((module) => {
+        const moduleLectures = updatedLectures.filter(
+          (lecture) =>
+            lecture.syllabusModule.toString() === module._id.toString()
+        );
+
+        // Calculate module completion status
+        const totalLectures = moduleLectures.length;
+        const reviewedLectures = moduleLectures.filter(
+          (lecture) => lecture.isReviewed
+        ).length;
+        const completionPercentage =
+          totalLectures > 0
+            ? Math.round((reviewedLectures / totalLectures) * 100)
+            : 0;
+
+        return {
+          _id: module._id,
+          moduleNumber: module.moduleNumber,
+          moduleTitle: module.moduleTitle,
+          description: module.description,
+          topics: module.topics,
+          isActive: module.isActive,
+          lectures: moduleLectures.map((lecture) => ({
+            _id: lecture._id,
+            title: lecture.title,
+            content: lecture.content,
+            videoUrl: lecture.videoUrl,
+            lectureOrder: lecture.lectureOrder,
+            isReviewed: lecture.isReviewed,
+            reviewDeadline: lecture.reviewDeadline,
+            createdAt: lecture.createdAt,
+            updatedAt: lecture.updatedAt,
+          })),
+          lectureCount: moduleLectures.length,
+          reviewedLectureCount: reviewedLectures,
+          completionPercentage: completionPercentage,
+          hasLectures: moduleLectures.length > 0,
+        };
+      })
+      .sort((a, b) => a.moduleNumber - b.moduleNumber); // Sort modules by number
   }
 
-  // Calculate total lecture count
+  // Calculate total lecture count and overall completion
   const totalLectureCount = modulesWithLectures.reduce(
     (total, module) => total + module.lectureCount,
     0
   );
+
+  const totalReviewedCount = modulesWithLectures.reduce(
+    (total, module) => total + module.reviewedLectureCount,
+    0
+  );
+
+  const overallCompletion =
+    totalLectureCount > 0
+      ? Math.round((totalReviewedCount / totalLectureCount) * 100)
+      : 0;
 
   return {
     _id: course._id,
@@ -195,10 +237,283 @@ const formatCourseData = async (course) => {
         },
     modules: modulesWithLectures,
     totalLectureCount,
+    totalReviewedCount,
+    overallCompletion,
     attendance: {
       sessions: attendanceSessions,
     },
   };
+};
+
+// Get specific course by ID with module-wise lectures
+const getCourseById = async function (req, res) {
+  try {
+    logger.info(
+      `Fetching course ID: ${req.params.courseId} for user: ${req.user.id}`
+    );
+
+    // Determine if the user is a teacher or student
+    const userRole = req.user.role;
+    let course,
+      students = [];
+
+    // Find the course
+    const courseQuery = Course.findById(req.params.courseId)
+      .populate("semester")
+      .populate("outcomes")
+      .populate("schedule")
+      .populate("syllabus")
+      .populate("weeklyPlan")
+      .populate("creditPoints")
+      .populate("attendance");
+
+    // Execute the query
+    course = await courseQuery.exec();
+
+    if (!course) {
+      logger.error(`Course not found with ID: ${req.params.courseId}`);
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    // Check if user has access to this course
+    let hasAccess = false;
+    let userDetails = null;
+
+    if (userRole === "teacher") {
+      // For teacher: check if they're the course teacher
+      const teacher = await Teacher.findOne({
+        user: req.user.id,
+        _id: course.teacher,
+      }).populate({
+        path: "user",
+        select: "name email role",
+      });
+
+      if (teacher) {
+        hasAccess = true;
+        userDetails = {
+          id: teacher._id,
+          name: teacher.user?.name,
+          email: teacher.email,
+        };
+
+        // Get students for this course
+        await teacher.populate({
+          path: "students",
+          populate: {
+            path: "user",
+            select: "name email",
+          },
+        });
+
+        students =
+          teacher.students?.map((student, index) => ({
+            id: student._id.toString(),
+            rollNo: `CS${String(index + 101).padStart(3, "0")}`,
+            name: student.user?.name || "Unknown",
+            program: "Computer Science",
+            email: student.user?.email || "",
+          })) || [];
+      }
+    } else if (userRole === "student") {
+      // For student: check if they're enrolled in the course
+      const student = await Student.findOne({ user: req.user.id }).populate({
+        path: "user",
+        select: "name email role",
+      });
+
+      if (student) {
+        // Check if student is enrolled in this course
+        const isEnrolled = student.courses.some(
+          (id) => id.toString() === req.params.courseId
+        );
+
+        if (isEnrolled) {
+          hasAccess = true;
+          userDetails = {
+            id: student._id,
+            name: student.user?.name,
+            email: student.user?.email,
+          };
+        }
+      }
+    }
+
+    if (!hasAccess) {
+      logger.error(
+        `User ${req.user.id} does not have access to course ${req.params.courseId}`
+      );
+      return res
+        .status(403)
+        .json({ error: "You don't have access to this course" });
+    }
+
+    logger.info(`Found course: ${course.title}`);
+
+    // Format the course data with module-based lectures
+    const formattedCourse = await formatCourseData(course);
+
+    // Structure the response
+    const response = {
+      id: formattedCourse._id,
+      title: formattedCourse.title,
+      aboutCourse: formattedCourse.aboutCourse,
+      semester: formattedCourse.semester,
+      creditPoints: formattedCourse.creditPoints,
+      learningOutcomes: formattedCourse.learningOutcomes,
+      weeklyPlan: formattedCourse.weeklyPlan,
+      syllabus: formattedCourse.syllabus,
+      courseSchedule: formattedCourse.courseSchedule,
+      modules: formattedCourse.modules,
+      totalLectureCount: formattedCourse.totalLectureCount,
+      totalReviewedCount: formattedCourse.totalReviewedCount,
+      overallCompletion: formattedCourse.overallCompletion,
+      attendance: formattedCourse.attendance,
+    };
+
+    // Add user-specific data
+    if (userRole === "teacher") {
+      response.teacher = {
+        id: userDetails.id,
+        name: userDetails.name,
+        email: userDetails.email,
+        totalStudents: students.length,
+      };
+      response.students = students;
+    } else if (userRole === "student") {
+      response.student = {
+        id: userDetails.id,
+        name: userDetails.name,
+        email: userDetails.email,
+      };
+      // Include teacher info for students as well
+      const courseTeacher = await Teacher.findById(course.teacher).populate(
+        "user",
+        "name email"
+      );
+      if (courseTeacher) {
+        response.teacher = {
+          id: courseTeacher._id,
+          name: courseTeacher.user?.name,
+          email: courseTeacher.user?.email,
+        };
+      }
+    }
+
+    res.json(response);
+  } catch (error) {
+    logger.error("Error in getCourseById:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// New function to get modules with lectures for a specific course
+const getCourseModulesWithLectures = async function (req, res) {
+  try {
+    logger.info(
+      `Fetching modules with lectures for course ID: ${req.params.courseId}`
+    );
+
+    const { courseId } = req.params;
+
+    // Verify user access to course
+    if (req.user.role === "teacher") {
+      const teacher = await Teacher.findOne({ user: req.user.id });
+      if (!teacher) {
+        return res.status(404).json({ error: "Teacher not found" });
+      }
+
+      const course = await Course.findOne({
+        _id: courseId,
+        teacher: teacher._id,
+      });
+
+      if (!course) {
+        return res.status(404).json({ error: "Course not found" });
+      }
+    } else if (req.user.role === "student") {
+      const student = await Student.findOne({ user: req.user.id });
+      if (!student) {
+        return res.status(404).json({ error: "Student not found" });
+      }
+
+      if (!student.courses.includes(courseId)) {
+        return res
+          .status(403)
+          .json({ error: "You are not enrolled in this course" });
+      }
+    }
+
+    // Get syllabus with modules
+    const syllabus = await CourseSyllabus.findOne({ course: courseId });
+    if (!syllabus) {
+      return res.status(404).json({ error: "Course syllabus not found" });
+    }
+
+    // Get all lectures for this course
+    const lectures = await Lecture.find({
+      course: courseId,
+      isActive: true,
+    }).sort({ moduleNumber: 1, lectureOrder: 1 });
+
+    // Check for lectures that have passed their review deadline
+    const now = new Date();
+    const updatePromises = lectures.map(async (lecture) => {
+      if (
+        !lecture.isReviewed &&
+        lecture.reviewDeadline &&
+        now >= lecture.reviewDeadline
+      ) {
+        lecture.isReviewed = true;
+        await lecture.save();
+      }
+      return lecture;
+    });
+
+    await Promise.all(updatePromises);
+
+    // Organize lectures by modules
+    const modulesWithLectures = syllabus.modules
+      .map((module) => {
+        const moduleLectures = lectures.filter(
+          (lecture) =>
+            lecture.syllabusModule.toString() === module._id.toString()
+        );
+
+        const totalLectures = moduleLectures.length;
+        const reviewedLectures = moduleLectures.filter(
+          (lecture) => lecture.isReviewed
+        ).length;
+        const completionPercentage =
+          totalLectures > 0
+            ? Math.round((reviewedLectures / totalLectures) * 100)
+            : 0;
+
+        return {
+          _id: module._id,
+          moduleNumber: module.moduleNumber,
+          moduleTitle: module.moduleTitle,
+          description: module.description,
+          topics: module.topics,
+          isActive: module.isActive,
+          lectures: moduleLectures,
+          lectureCount: moduleLectures.length,
+          reviewedLectureCount: reviewedLectures,
+          completionPercentage: completionPercentage,
+          hasLectures: moduleLectures.length > 0,
+        };
+      })
+      .sort((a, b) => a.moduleNumber - b.moduleNumber);
+
+    res.json({
+      success: true,
+      courseId,
+      modules: modulesWithLectures,
+    });
+  } catch (error) {
+    logger.error("Error in getCourseModulesWithLectures:", error);
+    res.status(500).json({ error: error.message });
+  }
 };
 
 const getEnrolledCourses = async function (req, res) {
@@ -523,166 +838,6 @@ const getUserCourses = async function (req, res) {
     }
   } catch (error) {
     logger.error("Error in getUserCourses:", error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
-// Get specific course by ID
-const getCourseById = async function (req, res) {
-  try {
-    logger.info(
-      `Fetching course ID: ${req.params.courseId} for user: ${req.user.id}`
-    );
-
-    // Determine if the user is a teacher or student
-    const userRole = req.user.role;
-    let course,
-      students = [];
-
-    // Find the course
-    const courseQuery = Course.findById(req.params.courseId)
-      .populate("semester")
-      .populate("outcomes")
-      .populate("schedule")
-      .populate("syllabus")
-      .populate("weeklyPlan")
-      .populate("creditPoints")
-      .populate("attendance");
-
-    // Execute the query
-    course = await courseQuery.exec();
-
-    if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    // Check if user has access to this course
-    let hasAccess = false;
-    let userDetails = null;
-
-    if (userRole === "teacher") {
-      // For teacher: check if they're the course teacher
-      const teacher = await Teacher.findOne({
-        user: req.user.id,
-        _id: course.teacher,
-      }).populate({
-        path: "user",
-        select: "name email role",
-      });
-
-      if (teacher) {
-        hasAccess = true;
-        userDetails = {
-          id: teacher._id,
-          name: teacher.user?.name,
-          email: teacher.email,
-        };
-
-        // Get students for this course
-        await teacher.populate({
-          path: "students",
-          populate: {
-            path: "user",
-            select: "name email",
-          },
-        });
-
-        students =
-          teacher.students?.map((student, index) => ({
-            id: student._id.toString(),
-            rollNo: `CS${String(index + 101).padStart(3, "0")}`,
-            name: student.user?.name || "Unknown",
-            program: "Computer Science",
-            email: student.user?.email || "",
-          })) || [];
-      }
-    } else if (userRole === "student") {
-      // For student: check if they're enrolled in the course
-      const student = await Student.findOne({ user: req.user.id }).populate({
-        path: "user",
-        select: "name email role",
-      });
-
-      if (student) {
-        // Check if student is enrolled in this course
-        const isEnrolled = student.courses.some(
-          (id) => id.toString() === req.params.courseId
-        );
-
-        if (isEnrolled) {
-          hasAccess = true;
-          userDetails = {
-            id: student._id,
-            name: student.user?.name,
-            email: student.user?.email,
-          };
-        }
-      }
-    }
-
-    if (!hasAccess) {
-      logger.error(
-        `User ${req.user.id} does not have access to course ${req.params.courseId}`
-      );
-      return res
-        .status(403)
-        .json({ error: "You don't have access to this course" });
-    }
-
-    logger.info(`Found course: ${course.title}`);
-
-    // Format the course data with module-based lectures
-    const formattedCourse = await formatCourseData(course);
-
-    // Structure the response
-    const response = {
-      id: formattedCourse._id,
-      title: formattedCourse.title,
-      aboutCourse: formattedCourse.aboutCourse,
-      semester: formattedCourse.semester,
-      creditPoints: formattedCourse.creditPoints,
-      learningOutcomes: formattedCourse.learningOutcomes,
-      weeklyPlan: formattedCourse.weeklyPlan,
-      syllabus: formattedCourse.syllabus,
-      courseSchedule: formattedCourse.courseSchedule,
-      modules: formattedCourse.modules,
-      totalLectureCount: formattedCourse.totalLectureCount,
-      attendance: formattedCourse.attendance,
-    };
-
-    // Add user-specific data
-    if (userRole === "teacher") {
-      response.teacher = {
-        id: userDetails.id,
-        name: userDetails.name,
-        email: userDetails.email,
-        totalStudents: students.length,
-      };
-      response.students = students;
-    } else if (userRole === "student") {
-      response.student = {
-        id: userDetails.id,
-        name: userDetails.name,
-        email: userDetails.email,
-      };
-      // Include teacher info for students as well
-      const courseTeacher = await Teacher.findById(course.teacher).populate(
-        "user",
-        "name email"
-      );
-      if (courseTeacher) {
-        response.teacher = {
-          id: courseTeacher._id,
-          name: courseTeacher.user?.name,
-          email: courseTeacher.user?.email,
-        };
-      }
-    }
-
-    res.json(response);
-  } catch (error) {
-    logger.error("Error in getCourseById:", error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -1365,4 +1520,5 @@ module.exports = {
   deleteCourse,
   updateCourseAttendance,
   getEnrolledCourses,
+  getCourseModulesWithLectures,
 };
