@@ -12,7 +12,7 @@ const CourseAttendance = require("../models/CourseAttendance");
 const mongoose = require("mongoose");
 const AWS = require("aws-sdk");
 
-// Better logging setup - replace with your preferred logging library
+// Better logging setup
 const logger = {
   info: (message) => console.log(`[INFO] ${message}`),
   error: (message, error) => console.error(`[ERROR] ${message}`, error),
@@ -29,17 +29,14 @@ const s3 = new AWS.S3({
 const uploadFileToS3 = async (file, path) => {
   console.log("Uploading file to S3");
   return new Promise((resolve, reject) => {
-    // Make sure we have the file data in the right format for S3
     const fileContent = file.data;
     if (!fileContent) {
       console.log("No file content found");
       return reject(new Error("No file content found"));
     }
 
-    // Generate a unique filename
     const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
 
-    // Set up the S3 upload parameters
     const params = {
       Bucket: process.env.AWS_S3_BUCKET_NAME,
       Key: fileName,
@@ -49,7 +46,6 @@ const uploadFileToS3 = async (file, path) => {
 
     console.log("S3 upload params prepared");
 
-    // Upload to S3
     s3.upload(params, (err, data) => {
       if (err) {
         console.log("S3 upload error:", err);
@@ -89,8 +85,8 @@ const deleteFileFromS3 = async (key) => {
   });
 };
 
-// Helper function to format course data
-const formatCourseData = (course) => {
+// Helper function to format course data with module-based lectures
+const formatCourseData = async (course) => {
   // Convert Map to object for attendance sessions
   const attendanceSessions = {};
   if (course.attendance && course.attendance.sessions) {
@@ -99,39 +95,49 @@ const formatCourseData = (course) => {
     }
   }
 
-  // Handle both embedded and referenced lectures
-  let lectures = [];
+  // Get lectures organized by modules
+  let modulesWithLectures = [];
+  if (course.syllabus && course.syllabus.modules) {
+    // Get all lectures for this course
+    const allLectures = await Lecture.find({
+      course: course._id,
+      isActive: true,
+    }).sort({ moduleNumber: 1, lectureOrder: 1 });
 
-  if (course.lectures) {
-    if (Array.isArray(course.lectures)) {
-      lectures = course.lectures.map((lecture) => {
-        // For embedded lectures
-        if (lecture && typeof lecture === "object" && !lecture._id) {
-          return {
-            title: lecture.title,
-            recordingUrl: lecture.recordingUrl,
-            date: lecture.date,
-            duration: lecture.duration,
-          };
-        }
-        // For referenced lectures
-        else if (lecture && typeof lecture === "object" && lecture._id) {
-          return {
-            _id: lecture._id,
-            title: lecture.title,
-            content: lecture.content,
-            videoUrl: lecture.videoUrl,
-            isReviewed: lecture.isReviewed,
-            reviewDeadline: lecture.reviewDeadline,
-            createdAt: lecture.createdAt,
-            updatedAt: lecture.updatedAt,
-          };
-        }
-        // If lectures are just IDs
-        return lecture;
-      });
-    }
+    // Organize lectures by modules
+    modulesWithLectures = course.syllabus.modules.map((module) => {
+      const moduleLectures = allLectures.filter(
+        (lecture) => lecture.syllabusModule.toString() === module._id.toString()
+      );
+
+      return {
+        _id: module._id,
+        moduleNumber: module.moduleNumber,
+        moduleTitle: module.moduleTitle,
+        description: module.description,
+        topics: module.topics,
+        isActive: module.isActive,
+        lectures: moduleLectures.map((lecture) => ({
+          _id: lecture._id,
+          title: lecture.title,
+          content: lecture.content,
+          videoUrl: lecture.videoUrl,
+          lectureOrder: lecture.lectureOrder,
+          isReviewed: lecture.isReviewed,
+          reviewDeadline: lecture.reviewDeadline,
+          createdAt: lecture.createdAt,
+          updatedAt: lecture.updatedAt,
+        })),
+        lectureCount: moduleLectures.length,
+      };
+    });
   }
+
+  // Calculate total lecture count
+  const totalLectureCount = modulesWithLectures.reduce(
+    (total, module) => total + module.lectureCount,
+    0
+  );
 
   return {
     _id: course._id,
@@ -161,9 +167,12 @@ const formatCourseData = (course) => {
       : [],
     syllabus: course.syllabus
       ? course.syllabus.modules.map((module) => ({
+          _id: module._id,
           moduleNumber: module.moduleNumber,
           moduleTitle: module.moduleTitle,
+          description: module.description,
           topics: module.topics,
+          isActive: module.isActive,
         }))
       : [],
     courseSchedule: course.schedule
@@ -184,7 +193,8 @@ const formatCourseData = (course) => {
           endSemesterExamDate: "",
           classDaysAndTimes: [],
         },
-    lectures: lectures,
+    modules: modulesWithLectures,
+    totalLectureCount,
     attendance: {
       sessions: attendanceSessions,
     },
@@ -239,6 +249,31 @@ const getEnrolledCourses = async function (req, res) {
       .populate("semester", "name startDate endDate")
       .sort({ createdAt: -1 });
 
+    // Get lecture counts for each course
+    const coursesWithLectureCounts = await Promise.all(
+      courses.map(async (course) => {
+        const lectureCount = await Lecture.countDocuments({
+          course: course._id,
+          isActive: true,
+        });
+
+        return {
+          _id: course._id,
+          title: course.title,
+          aboutCourse: course.aboutCourse,
+          semester: course.semester
+            ? {
+                _id: course.semester._id,
+                name: course.semester.name,
+                startDate: course.semester.startDate,
+                endDate: course.semester.endDate,
+              }
+            : null,
+          lectureCount,
+        };
+      })
+    );
+
     logger.info(
       `Found ${courses.length} enrolled courses for student: ${student._id}`
     );
@@ -251,25 +286,14 @@ const getEnrolledCourses = async function (req, res) {
         role: "student",
         totalCourses: courses.length || 0,
       },
-      courses: courses.map((course) => ({
-        _id: course._id,
-        title: course.title,
-        aboutCourse: course.aboutCourse,
-        semester: course.semester
-          ? {
-              _id: course.semester._id,
-              name: course.semester.name,
-              startDate: course.semester.startDate,
-              endDate: course.semester.endDate,
-            }
-          : null,
-      })),
+      courses: coursesWithLectureCounts,
     });
   } catch (error) {
     logger.error("Error in getEnrolledCourses:", error);
     res.status(500).json({ error: error.message });
   }
 };
+
 const getUserCourses = async function (req, res) {
   try {
     logger.info(`Fetching courses for user with ID: ${req.user.id}`);
@@ -289,60 +313,80 @@ const getUserCourses = async function (req, res) {
 
       // Find courses taught by this teacher
       const courses = await Course.find({ teacher: teacher._id })
-        .select("_id title aboutCourse assignments attendance schedule semester")
-        .populate("assignments", "_id title description dueDate totalPoints isActive submissions")
+        .select(
+          "_id title aboutCourse assignments attendance schedule semester"
+        )
+        .populate(
+          "assignments",
+          "_id title description dueDate totalPoints isActive submissions"
+        )
         .populate("attendance", "sessions")
-        .populate("schedule", "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes")
+        .populate(
+          "schedule",
+          "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes"
+        )
         .populate("semester", "_id name startDate endDate")
         .sort({ createdAt: -1 });
 
-      logger.info(`Found ${courses.length} courses for teacher: ${teacher._id}`);
+      logger.info(
+        `Found ${courses.length} courses for teacher: ${teacher._id}`
+      );
 
-      const coursesWithAdditionalData = courses.map((course) => ({
-        _id: course._id,
-        title: course.title,
-        aboutCourse: course.aboutCourse,
-        semester: course.semester
-          ? {
-              _id: course.semester._id,
-              name: course.semester.name,
-              startDate: course.semester.startDate,
-              endDate: course.semester.endDate,
-            }
-          : null,
-        schedule: course.schedule
-          ? {
-              _id: course.schedule._id,
-              classStartDate: course.schedule.classStartDate,
-              classEndDate: course.schedule.classEndDate,
-              midSemesterExamDate: course.schedule.midSemesterExamDate,
-              endSemesterExamDate: course.schedule.endSemesterExamDate,
-              classDaysAndTimes: course.schedule.classDaysAndTimes || [],
-            }
-          : null,
-        assignmentCount: course.assignments.length,
-        lectureCount: course.lectures ? course.lectures.length : 0,
-        assignments: course.assignments.map((assignment) => ({
-          _id: assignment._id,
-          title: assignment.title,
-          description: assignment.description,
-          dueDate: assignment.dueDate,
-          totalPoints: assignment.totalPoints,
-          isActive: assignment.isActive,
-          submissions: assignment.submissions.map((submission) => ({
-            _id: submission._id,
-            student: submission.student, // Include student ID
-            submissionDate: submission.submissionDate,
-            submissionFile: submission.submissionFile,
-            grade: submission.grade,
-            feedback: submission.feedback,
-            status: submission.status,
-          })),
-        })),
-        attendance: course.attendance
-          ? Object.fromEntries(course.attendance.sessions)
-          : {},
-      }));
+      const coursesWithAdditionalData = await Promise.all(
+        courses.map(async (course) => {
+          // Get lecture count for this course
+          const lectureCount = await Lecture.countDocuments({
+            course: course._id,
+            isActive: true,
+          });
+
+          return {
+            _id: course._id,
+            title: course.title,
+            aboutCourse: course.aboutCourse,
+            semester: course.semester
+              ? {
+                  _id: course.semester._id,
+                  name: course.semester.name,
+                  startDate: course.semester.startDate,
+                  endDate: course.semester.endDate,
+                }
+              : null,
+            schedule: course.schedule
+              ? {
+                  _id: course.schedule._id,
+                  classStartDate: course.schedule.classStartDate,
+                  classEndDate: course.schedule.classEndDate,
+                  midSemesterExamDate: course.schedule.midSemesterExamDate,
+                  endSemesterExamDate: course.schedule.endSemesterExamDate,
+                  classDaysAndTimes: course.schedule.classDaysAndTimes || [],
+                }
+              : null,
+            assignmentCount: course.assignments.length,
+            lectureCount,
+            assignments: course.assignments.map((assignment) => ({
+              _id: assignment._id,
+              title: assignment.title,
+              description: assignment.description,
+              dueDate: assignment.dueDate,
+              totalPoints: assignment.totalPoints,
+              isActive: assignment.isActive,
+              submissions: assignment.submissions.map((submission) => ({
+                _id: submission._id,
+                student: submission.student,
+                submissionDate: submission.submissionDate,
+                submissionFile: submission.submissionFile,
+                grade: submission.grade,
+                feedback: submission.feedback,
+                status: submission.status,
+              })),
+            })),
+            attendance: course.attendance
+              ? Object.fromEntries(course.attendance.sessions)
+              : {},
+          };
+        })
+      );
 
       res.json({
         user: {
@@ -383,65 +427,86 @@ const getUserCourses = async function (req, res) {
       }
 
       const courses = await Course.find({ _id: { $in: courseIds } })
-        .select("_id title aboutCourse assignments attendance schedule semester")
-        .populate("assignments", "_id title description dueDate totalPoints isActive submissions")
+        .select(
+          "_id title aboutCourse assignments attendance schedule semester"
+        )
+        .populate(
+          "assignments",
+          "_id title description dueDate totalPoints isActive submissions"
+        )
         .populate({
           path: "assignments.submissions",
           match: { student: student._id },
-          select: "_id student submissionDate submissionFile grade feedback status",
+          select:
+            "_id student submissionDate submissionFile grade feedback status",
         })
         .populate("attendance", "sessions")
-        .populate("schedule", "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes")
+        .populate(
+          "schedule",
+          "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes"
+        )
         .populate("semester", "_id name startDate endDate")
         .sort({ createdAt: -1 });
 
-      logger.info(`Found ${courses.length} courses for student: ${student._id}`);
+      logger.info(
+        `Found ${courses.length} courses for student: ${student._id}`
+      );
 
-      const coursesWithAdditionalData = courses.map((course) => ({
-        _id: course._id,
-        title: course.title,
-        aboutCourse: course.aboutCourse,
-        semester: course.semester
-          ? {
-              _id: course.semester._id,
-              name: course.semester.name,
-              startDate: course.semester.startDate,
-              endDate: course.semester.endDate,
-            }
-          : null,
-        schedule: course.schedule
-          ? {
-              _id: course.schedule._id,
-              classStartDate: course.schedule.classStartDate,
-              classEndDate: course.schedule.classEndDate,
-              midSemesterExamDate: course.schedule.midSemesterExamDate,
-              endSemesterExamDate: course.schedule.endSemesterExamDate,
-              classDaysAndTimes: course.schedule.classDaysAndTimes || [],
-            }
-          : null,
-        assignmentCount: course.assignments.length,
-        lectureCount: course.lectures ? course.lectures.length : 0,
-        assignments: course.assignments.map((assignment) => ({
-          _id: assignment._id,
-          title: assignment.title,
-          description: assignment.description,
-          dueDate: assignment.dueDate,
-          totalPoints: assignment.totalPoints,
-          isActive: assignment.isActive,
-          submissions: assignment.submissions.map((submission) => ({
-            _id: submission._id,
-            student: submission.student, // Include student ID
-            submissionDate: submission.submissionDate,
-            submissionFile: submission.submissionFile,
-            grade: submission.grade,
-            feedback: submission.feedback,
-            status: submission.status,
-          })),
-        })),
-        attendance: course.attendance
-          ? Object.fromEntries(course.attendance.sessions)
-          : {},
-      }));
+      const coursesWithAdditionalData = await Promise.all(
+        courses.map(async (course) => {
+          // Get lecture count for this course
+          const lectureCount = await Lecture.countDocuments({
+            course: course._id,
+            isActive: true,
+          });
+
+          return {
+            _id: course._id,
+            title: course.title,
+            aboutCourse: course.aboutCourse,
+            semester: course.semester
+              ? {
+                  _id: course.semester._id,
+                  name: course.semester.name,
+                  startDate: course.semester.startDate,
+                  endDate: course.semester.endDate,
+                }
+              : null,
+            schedule: course.schedule
+              ? {
+                  _id: course.schedule._id,
+                  classStartDate: course.schedule.classStartDate,
+                  classEndDate: course.schedule.classEndDate,
+                  midSemesterExamDate: course.schedule.midSemesterExamDate,
+                  endSemesterExamDate: course.schedule.endSemesterExamDate,
+                  classDaysAndTimes: course.schedule.classDaysAndTimes || [],
+                }
+              : null,
+            assignmentCount: course.assignments.length,
+            lectureCount,
+            assignments: course.assignments.map((assignment) => ({
+              _id: assignment._id,
+              title: assignment.title,
+              description: assignment.description,
+              dueDate: assignment.dueDate,
+              totalPoints: assignment.totalPoints,
+              isActive: assignment.isActive,
+              submissions: assignment.submissions.map((submission) => ({
+                _id: submission._id,
+                student: submission.student,
+                submissionDate: submission.submissionDate,
+                submissionFile: submission.submissionFile,
+                grade: submission.grade,
+                feedback: submission.feedback,
+                status: submission.status,
+              })),
+            })),
+            attendance: course.attendance
+              ? Object.fromEntries(course.attendance.sessions)
+              : {},
+          };
+        })
+      );
 
       res.json({
         user: {
@@ -461,6 +526,7 @@ const getUserCourses = async function (req, res) {
     res.status(500).json({ error: error.message });
   }
 };
+
 // Get specific course by ID
 const getCourseById = async function (req, res) {
   try {
@@ -540,9 +606,9 @@ const getCourseById = async function (req, res) {
 
       if (student) {
         // Check if student is enrolled in this course
-        // This depends on your data model - you might need to check an enrollments collection
-        // or check if the student is in the course's students array
-        const isEnrolled = true; // Replace with actual enrollment check
+        const isEnrolled = student.courses.some(
+          (id) => id.toString() === req.params.courseId
+        );
 
         if (isEnrolled) {
           hasAccess = true;
@@ -564,21 +630,10 @@ const getCourseById = async function (req, res) {
         .json({ error: "You don't have access to this course" });
     }
 
-    // Check if lectures are referenced (ObjectIds) instead of embedded
-    const hasReferencedLectures =
-      course.lectures &&
-      course.lectures.length > 0 &&
-      typeof course.lectures[0] !== "object";
-
-    // Populate lectures if they are references
-    if (hasReferencedLectures) {
-      await course.populate("lectures");
-    }
-
     logger.info(`Found course: ${course.title}`);
 
-    // Format the course data
-    const formattedCourse = formatCourseData(course);
+    // Format the course data with module-based lectures
+    const formattedCourse = await formatCourseData(course);
 
     // Structure the response
     const response = {
@@ -591,6 +646,8 @@ const getCourseById = async function (req, res) {
       weeklyPlan: formattedCourse.weeklyPlan,
       syllabus: formattedCourse.syllabus,
       courseSchedule: formattedCourse.courseSchedule,
+      modules: formattedCourse.modules,
+      totalLectureCount: formattedCourse.totalLectureCount,
       attendance: formattedCourse.attendance,
     };
 
@@ -629,7 +686,8 @@ const getCourseById = async function (req, res) {
     res.status(500).json({ error: error.message });
   }
 };
-// Create new course
+
+// Create new course (keeping existing logic, removing old lecture handling)
 const createCourse = async function (req, res) {
   logger.info("Starting createCourse controller function");
 
@@ -652,19 +710,12 @@ const createCourse = async function (req, res) {
       throw new Error("Teacher not found");
     }
 
-    // Determine if we're using embedded or referenced lectures
-    const useEmbeddedLectures =
-      req.body.lectures &&
-      req.body.lectures.length > 0 &&
-      (req.body.lectures[0].recordingUrl || !req.body.lectures[0].content);
-
-    // Create main course
+    // Create main course (remove old lecture handling)
     const courseData = {
       title: req.body.title,
       aboutCourse: req.body.aboutCourse,
       semester: req.body.semester,
       teacher: teacher._id,
-      lectures: useEmbeddedLectures ? req.body.lectures : [], // Use embedded lectures if appropriate
     };
 
     const course = new Course(courseData);
@@ -705,7 +756,11 @@ const createCourse = async function (req, res) {
       const syllabus = await CourseSyllabus.create(
         [
           {
-            modules: req.body.syllabus,
+            modules: req.body.syllabus.map((module, index) => ({
+              ...module,
+              order: index + 1,
+              lectures: [], // Initialize empty lectures array
+            })),
             course: course._id,
           },
         ],
@@ -750,7 +805,6 @@ const createCourse = async function (req, res) {
     // Create attendance if provided
     if (req.body.attendance && req.body.attendance.sessions) {
       logger.info("Creating course attendance");
-      // Convert object to Map for MongoDB
       const sessionsMap = new Map(Object.entries(req.body.attendance.sessions));
       const attendance = await CourseAttendance.create(
         [
@@ -763,32 +817,6 @@ const createCourse = async function (req, res) {
       );
       course.attendance = attendance[0]._id;
       logger.info(`Course attendance created with ID: ${attendance[0]._id}`);
-    }
-
-    // Create lectures as separate documents if not using embedded lectures
-    if (
-      !useEmbeddedLectures &&
-      req.body.lectures &&
-      req.body.lectures.length > 0
-    ) {
-      logger.info("Creating lectures as separate documents for the course");
-      const lecturePromises = req.body.lectures.map((lectureData) => {
-        return Lecture.create(
-          [
-            {
-              ...lectureData,
-              course: course._id,
-            },
-          ],
-          { session }
-        );
-      });
-
-      const createdLectures = await Promise.all(lecturePromises);
-      const lectureIds = createdLectures.map((lecture) => lecture[0]._id);
-
-      course.lectures = lectureIds;
-      logger.info(`Created ${lectureIds.length} lectures for the course`);
     }
 
     // Save updated course with all references
@@ -810,12 +838,11 @@ const createCourse = async function (req, res) {
     if (students && students.length > 0) {
       logger.info("Adding course to students' course arrays");
       const updatePromises = students.map((student) => {
-        // Check if the course is already in the student's courses array
         if (!student.courses.includes(course._id)) {
           student.courses.push(course._id);
           return student.save({ session });
         }
-        return Promise.resolve(); // No update needed
+        return Promise.resolve();
       });
 
       await Promise.all(updatePromises);
@@ -838,13 +865,8 @@ const createCourse = async function (req, res) {
       .populate("creditPoints")
       .populate("attendance");
 
-    // Populate lectures if they are referenced
-    if (!useEmbeddedLectures) {
-      courseQuery.populate("lectures");
-    }
-
     const createdCourse = await courseQuery.exec();
-    const formattedCourse = formatCourseData(createdCourse);
+    const formattedCourse = await formatCourseData(createdCourse);
 
     logger.info("Sending response with formatted course data");
     res.status(201).json(formattedCourse);
@@ -869,7 +891,7 @@ const createCourse = async function (req, res) {
   }
 };
 
-// Update course
+// Update course (keeping existing logic, removing old lecture handling)
 const updateCourse = async function (req, res) {
   logger.info(`Updating course ID: ${req.params.courseId}`);
 
@@ -899,22 +921,10 @@ const updateCourse = async function (req, res) {
       throw new Error("Course not found");
     }
 
-    // Determine if we're using embedded or referenced lectures
-    const isUsingEmbeddedLectures =
-      course.lectures &&
-      course.lectures.length > 0 &&
-      typeof course.lectures[0] === "object" &&
-      !course.lectures[0]._id;
-
-    // Update main course fields
+    // Update main course fields (remove lecture handling)
     if (req.body.title) course.title = req.body.title;
     if (req.body.aboutCourse) course.aboutCourse = req.body.aboutCourse;
     if (req.body.semester) course.semester = req.body.semester;
-
-    // Update lectures if they are embedded
-    if (isUsingEmbeddedLectures && req.body.lectures) {
-      course.lectures = req.body.lectures;
-    }
 
     await course.save({ session });
     logger.info("Updated main course fields");
@@ -974,7 +984,13 @@ const updateCourse = async function (req, res) {
       if (course.syllabus) {
         await CourseSyllabus.findByIdAndUpdate(
           course.syllabus,
-          { modules: req.body.syllabus },
+          {
+            modules: req.body.syllabus.map((module, index) => ({
+              ...module,
+              order: index + 1,
+              lectures: module.lectures || [], // Preserve existing lectures
+            })),
+          },
           { session }
         );
         logger.info(`Updated existing syllabus: ${course.syllabus}`);
@@ -982,7 +998,11 @@ const updateCourse = async function (req, res) {
         const syllabus = await CourseSyllabus.create(
           [
             {
-              modules: req.body.syllabus,
+              modules: req.body.syllabus.map((module, index) => ({
+                ...module,
+                order: index + 1,
+                lectures: [], // Initialize empty lectures array
+              })),
               course: course._id,
             },
           ],
@@ -1046,7 +1066,6 @@ const updateCourse = async function (req, res) {
 
     // Update attendance
     if (req.body.attendance && req.body.attendance.sessions) {
-      // Convert object to Map for MongoDB
       const sessionsMap = new Map(Object.entries(req.body.attendance.sessions));
 
       if (course.attendance) {
@@ -1072,57 +1091,6 @@ const updateCourse = async function (req, res) {
       }
     }
 
-    // Handle lectures update if they are referenced documents
-    // if (!isUsingEmbeddedLectures && req.body.lectures) {
-    //   // Get existing lecture IDs
-    //   const existingLectureIds = course.lectures.map((id) =>
-    //     id instanceof mongoose.Types.ObjectId ? id.toString() : id.toString()
-    //   );
-
-    //   // Process each lecture from the request
-    //   const updatePromises = [];
-    //   const newLectures = [];
-
-    //   for (const lectureData of req.body.lectures) {
-    //     // If lecture has an ID, update it
-    //     if (
-    //       lectureData._id &&
-    //       existingLectureIds.includes(lectureData._id.toString())
-    //     ) {
-    //       updatePromises.push(
-    //         Lecture.findByIdAndUpdate(lectureData._id, lectureData, {
-    //           session,
-    //           new: true,
-    //         })
-    //       );
-    //     }
-    //     // Otherwise create a new lecture
-    //     else {
-    //       newLectures.push({
-    //         ...lectureData,
-    //         course: course._id,
-    //       });
-    //     }
-    //   }
-
-    //   // Create any new lectures
-    //   if (newLectures.length > 0) {
-    //     const createdLectures = await Lecture.create(newLectures, { session });
-    //     const newLectureIds = createdLectures.map((lecture) => lecture._id);
-
-    //     // Add new lecture IDs to the course
-    //     course.lectures = [...course.lectures, ...newLectureIds];
-    //     await course.save({ session });
-    //     logger.info(`Added ${newLectureIds.length} new lectures to the course`);
-    //   }
-
-    //   // Update existing lectures
-    //   if (updatePromises.length > 0) {
-    //     await Promise.all(updatePromises);
-    //     logger.info(`Updated ${updatePromises.length} existing lectures`);
-    //   }
-    // }
-
     logger.info("Committing transaction");
     await session.commitTransaction();
     transactionStarted = false;
@@ -1138,13 +1106,8 @@ const updateCourse = async function (req, res) {
       .populate("creditPoints")
       .populate("attendance");
 
-    // Populate lectures if they are referenced
-    if (!isUsingEmbeddedLectures) {
-      courseQuery.populate("lectures");
-    }
-
     const updatedCourse = await courseQuery.exec();
-    const formattedCourse = formatCourseData(updatedCourse);
+    const formattedCourse = await formatCourseData(updatedCourse);
     res.json(formattedCourse);
   } catch (error) {
     logger.error("Error in updateCourse:", error);
@@ -1225,47 +1188,23 @@ const deleteCourse = async function (req, res) {
       logger.info(`Deleted course attendance: ${course.attendance}`);
     }
 
-    // Determine if we're using embedded or referenced lectures
-    const isUsingReferencedLectures =
-      course.lectures &&
-      course.lectures.length > 0 &&
-      (typeof course.lectures[0] !== "object" || course.lectures[0]._id);
-
-    // Delete referenced lectures if they exist
-    if (isUsingReferencedLectures) {
-      // Get all lecture IDs
-      const lectureIds = course.lectures.map((id) =>
-        id instanceof mongoose.Types.ObjectId ? id : id._id
-      );
-
-      // Find all lectures to get their videoKeys
-      const lectures = await Lecture.find({
-        _id: { $in: lectureIds },
-      }).session(session);
-
-      // Delete videos from S3 for each lecture
-      for (const lecture of lectures) {
-        if (lecture.videoKey) {
-          try {
-            await deleteFileFromS3(lecture.videoKey);
-            logger.info(`Deleted video from S3: ${lecture.videoKey}`);
-          } catch (deleteError) {
-            logger.error("Error deleting video file:", deleteError);
-            // Continue with lecture deletion even if S3 delete fails
-          }
+    // Delete all lectures for this course
+    const lectures = await Lecture.find({ course: course._id }).session(
+      session
+    );
+    for (const lecture of lectures) {
+      if (lecture.videoKey) {
+        try {
+          await deleteFileFromS3(lecture.videoKey);
+          logger.info(`Deleted video from S3: ${lecture.videoKey}`);
+        } catch (deleteError) {
+          logger.error("Error deleting video file:", deleteError);
         }
       }
-
-      // Delete all lectures
-      await Lecture.deleteMany(
-        {
-          _id: { $in: lectureIds },
-        },
-        { session }
-      );
-
-      logger.info(`Deleted ${lectureIds.length} lectures for this course`);
     }
+
+    await Lecture.deleteMany({ course: course._id }, { session });
+    logger.info(`Deleted all lectures for course: ${course._id}`);
 
     // Remove course from teacher's courses
     teacher.courses = teacher.courses.filter((id) => !id.equals(course._id));
@@ -1320,7 +1259,7 @@ const deleteCourse = async function (req, res) {
   }
 };
 
-// Update attendance only
+// Update attendance only (keeping existing logic)
 const updateCourseAttendance = async function (req, res) {
   logger.info(`Updating attendance for course ID: ${req.params.courseId}`);
 
@@ -1351,7 +1290,6 @@ const updateCourseAttendance = async function (req, res) {
     }
 
     if (req.body.sessions) {
-      // Convert object to Map for MongoDB
       const sessionsMap = new Map(Object.entries(req.body.sessions));
 
       if (course.attendance) {
@@ -1419,366 +1357,6 @@ const updateCourseAttendance = async function (req, res) {
   }
 };
 
-// Add a new lecture to a course
-const addLecture = async function (req, res) {
-  try {
-    logger.info(`Adding lecture to course ID: ${req.params.courseId}`);
-
-    const teacher = await Teacher.findOne({ user: req.user.id });
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Teacher not found" });
-    }
-
-    const course = await Course.findOne({
-      _id: req.params.courseId,
-      teacher: teacher._id,
-    });
-
-    if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    // Determine if we're using embedded or referenced lectures
-    const isUsingEmbeddedLectures =
-      course.lectures &&
-      course.lectures.length > 0 &&
-      typeof course.lectures[0] === "object" &&
-      !course.lectures[0]._id;
-
-    if (isUsingEmbeddedLectures) {
-      // Add lecture to embedded array
-      const newLecture = {
-        title: req.body.title,
-        recordingUrl: req.body.recordingUrl || req.body.videoUrl,
-        date: req.body.date || new Date(),
-        duration: req.body.duration || 0,
-      };
-
-      course.lectures.push(newLecture);
-      await course.save();
-
-      logger.info(`Added embedded lecture to course: ${course._id}`);
-      return res.status(201).json(course);
-    } else {
-      // Handle video file upload if present
-      let videoUrl = req.body.videoUrl;
-      let videoKey = null;
-
-      if (req.files && req.files.video) {
-        const videoFile = req.files.video;
-
-        // Validate file type
-        if (!videoFile.mimetype.startsWith("video/")) {
-          return res
-            .status(400)
-            .json({ error: "Uploaded file must be a video" });
-        }
-
-        // Upload to S3
-        const uploadPath = `courses/${course._id}/lectures`;
-        const uploadResult = await uploadFileToS3(videoFile, uploadPath);
-
-        videoUrl = uploadResult.url;
-        videoKey = uploadResult.key;
-      }
-
-      // Create new lecture document
-      const newLecture = new Lecture({
-        title: req.body.title,
-        content: req.body.content || req.body.title,
-        videoUrl: videoUrl,
-        videoKey: videoKey,
-        course: course._id,
-        isReviewed: req.body.isReviewed || false,
-        reviewDeadline: req.body.reviewDeadline || undefined,
-      });
-
-      await newLecture.save();
-
-      // Add lecture ID to course
-      course.lectures.push(newLecture._id);
-      await course.save();
-
-      logger.info(`Created new lecture document: ${newLecture._id}`);
-      return res.status(201).json(newLecture);
-    }
-  } catch (error) {
-    logger.error("Error in addLecture:", error);
-    return res.status(400).json({ error: error.message });
-  }
-};
-
-// Update a specific lecture in a course
-const updateCourseLecture = async function (req, res) {
-  try {
-    logger.info(
-      `Updating lecture ID: ${req.params.lectureId} in course ID: ${req.params.courseId}`
-    );
-
-    const teacher = await Teacher.findOne({ user: req.user.id });
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Teacher not found" });
-    }
-
-    const course = await Course.findOne({
-      _id: req.params.courseId,
-      teacher: teacher._id,
-    });
-
-    if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    // Determine if we're using embedded or referenced lectures
-    const isUsingEmbeddedLectures =
-      course.lectures &&
-      course.lectures.length > 0 &&
-      typeof course.lectures[0] === "object" &&
-      !course.lectures[0]._id;
-
-    if (isUsingEmbeddedLectures) {
-      // For embedded lectures, find by index
-      const lectureIndex = parseInt(req.params.lectureId);
-
-      if (
-        isNaN(lectureIndex) ||
-        lectureIndex < 0 ||
-        lectureIndex >= course.lectures.length
-      ) {
-        logger.error(`Invalid lecture index: ${req.params.lectureId}`);
-        return res.status(404).json({ error: "Lecture not found" });
-      }
-
-      // Update embedded lecture
-      if (req.body.title) course.lectures[lectureIndex].title = req.body.title;
-      if (req.body.recordingUrl)
-        course.lectures[lectureIndex].recordingUrl = req.body.recordingUrl;
-      if (req.body.videoUrl)
-        course.lectures[lectureIndex].recordingUrl = req.body.videoUrl;
-      if (req.body.date) course.lectures[lectureIndex].date = req.body.date;
-      if (req.body.duration)
-        course.lectures[lectureIndex].duration = req.body.duration;
-
-      await course.save();
-
-      logger.info(`Updated embedded lecture at index: ${lectureIndex}`);
-      return res.json(course.lectures[lectureIndex]);
-    } else {
-      // For referenced lectures, find the lecture by ID
-      const lecture = await Lecture.findOne({
-        _id: req.params.lectureId,
-        course: course._id,
-      });
-
-      if (!lecture) {
-        logger.error(`Lecture not found with ID: ${req.params.lectureId}`);
-        return res.status(404).json({ error: "Lecture not found" });
-      }
-
-      // Update lecture fields
-      if (req.body.title) lecture.title = req.body.title;
-      if (req.body.content) lecture.content = req.body.content;
-
-      // Handle video file update if provided
-      if (req.files && req.files.video) {
-        const videoFile = req.files.video;
-
-        // Validate file type
-        if (!videoFile.mimetype.startsWith("video/")) {
-          return res
-            .status(400)
-            .json({ error: "Uploaded file must be a video" });
-        }
-
-        // Delete old video from S3 if it exists
-        if (lecture.videoKey) {
-          try {
-            await deleteFileFromS3(lecture.videoKey);
-          } catch (deleteError) {
-            logger.error("Error deleting old video file:", deleteError);
-            // Continue with upload even if delete fails
-          }
-        }
-
-        // Upload new video to S3
-        const uploadPath = `courses/${course._id}/lectures`;
-        const uploadResult = await uploadFileToS3(videoFile, uploadPath);
-
-        lecture.videoUrl = uploadResult.url;
-        lecture.videoKey = uploadResult.key;
-      } else if (req.body.videoUrl) {
-        lecture.videoUrl = req.body.videoUrl;
-      }
-
-      // Update review fields
-      if (req.body.isReviewed !== undefined)
-        lecture.isReviewed = req.body.isReviewed;
-      if (req.body.reviewDeadline)
-        lecture.reviewDeadline = new Date(req.body.reviewDeadline);
-
-      await lecture.save();
-
-      logger.info(`Updated lecture: ${lecture._id}`);
-      return res.json(lecture);
-    }
-  } catch (error) {
-    logger.error("Error in updateCourseLecture:", error);
-    return res.status(400).json({ error: error.message });
-  }
-};
-
-// Delete a lecture from a course
-const deleteCourseLecture = async function (req, res) {
-  try {
-    logger.info(
-      `Deleting lecture ID: ${req.params.lectureId} from course ID: ${req.params.courseId}`
-    );
-
-    const teacher = await Teacher.findOne({ user: req.user.id });
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Teacher not found" });
-    }
-
-    const course = await Course.findOne({
-      _id: req.params.courseId,
-      teacher: teacher._id,
-    });
-
-    if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    // Determine if we're using embedded or referenced lectures
-    const isUsingEmbeddedLectures =
-      course.lectures &&
-      course.lectures.length > 0 &&
-      typeof course.lectures[0] === "object" &&
-      !course.lectures[0]._id;
-
-    if (isUsingEmbeddedLectures) {
-      // For embedded lectures, find by index and remove
-      const lectureIndex = parseInt(req.params.lectureId);
-
-      if (
-        isNaN(lectureIndex) ||
-        lectureIndex < 0 ||
-        lectureIndex >= course.lectures.length
-      ) {
-        logger.error(`Invalid lecture index: ${req.params.lectureId}`);
-        return res.status(404).json({ error: "Lecture not found" });
-      }
-
-      // Remove lecture at index
-      course.lectures.splice(lectureIndex, 1);
-      await course.save();
-
-      logger.info(`Removed embedded lecture at index: ${lectureIndex}`);
-      return res.json({ message: "Lecture removed successfully" });
-    } else {
-      // For referenced lectures, find the lecture by ID
-      const lecture = await Lecture.findOne({
-        _id: req.params.lectureId,
-        course: course._id,
-      });
-
-      if (!lecture) {
-        logger.error(`Lecture not found with ID: ${req.params.lectureId}`);
-        return res.status(404).json({ error: "Lecture not found" });
-      }
-
-      // Delete video from S3 if it exists
-      if (lecture.videoKey) {
-        try {
-          await deleteFileFromS3(lecture.videoKey);
-          logger.info(`Deleted video from S3: ${lecture.videoKey}`);
-        } catch (deleteError) {
-          logger.error("Error deleting video file:", deleteError);
-          // Continue with lecture deletion even if S3 delete fails
-        }
-      }
-
-      // Remove lecture ID from course
-      course.lectures = course.lectures.filter(
-        (id) => id.toString() !== lecture._id.toString()
-      );
-      await course.save();
-
-      // Delete the lecture document
-      await Lecture.findByIdAndDelete(lecture._id);
-
-      logger.info(`Deleted lecture: ${lecture._id}`);
-      return res.json({ message: "Lecture deleted successfully" });
-    }
-  } catch (error) {
-    logger.error("Error in deleteCourseLecture:", error);
-    return res.status(400).json({ error: error.message });
-  }
-};
-
-// Get all lectures for a course
-const getCourseLectures = async function (req, res) {
-  try {
-    logger.info(`Getting all lectures for course ID: ${req.params.courseId}`);
-
-    const teacher = await Teacher.findOne({ user: req.user.id });
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Teacher not found" });
-    }
-
-    const course = await Course.findOne({
-      _id: req.params.courseId,
-      teacher: teacher._id,
-    });
-
-    if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    // Determine if we're using embedded or referenced lectures
-    const isUsingEmbeddedLectures =
-      course.lectures &&
-      course.lectures.length > 0 &&
-      typeof course.lectures[0] === "object" &&
-      !course.lectures[0]._id;
-
-    if (isUsingEmbeddedLectures) {
-      // Return embedded lectures directly
-      logger.info(`Returning ${course.lectures.length} embedded lectures`);
-      return res.json(course.lectures);
-    } else {
-      // For referenced lectures, populate and return
-      await course.populate("lectures");
-
-      // Check and update review status for all lectures
-      const now = new Date();
-      for (const lecture of course.lectures) {
-        if (
-          !lecture.isReviewed &&
-          lecture.reviewDeadline &&
-          now >= lecture.reviewDeadline
-        ) {
-          lecture.isReviewed = true;
-          await lecture.save();
-        }
-      }
-
-      logger.info(`Returning ${course.lectures.length} referenced lectures`);
-      return res.json(course.lectures);
-    }
-  } catch (error) {
-    logger.error("Error in getCourseLectures:", error);
-    return res.status(500).json({ error: error.message });
-  }
-};
-
 module.exports = {
   getUserCourses,
   getCourseById,
@@ -1786,9 +1364,5 @@ module.exports = {
   updateCourse,
   deleteCourse,
   updateCourseAttendance,
-  addLecture,
-  updateCourseLecture,
-  deleteCourseLecture,
-  getCourseLectures,
   getEnrolledCourses,
 };

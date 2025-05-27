@@ -2,10 +2,11 @@ const Course = require("../models/Course");
 const Teacher = require("../models/Teacher");
 const Student = require("../models/Student");
 const Lecture = require("../models/Lecture");
+const CourseSyllabus = require("../models/CourseSyllabus");
 const mongoose = require("mongoose");
 const AWS = require("aws-sdk");
 
-// Better logging setup - replace with your preferred logging library
+// Better logging setup
 const logger = {
   info: (message) => console.log(`[INFO] ${message}`),
   error: (message, error) => console.error(`[ERROR] ${message}`, error),
@@ -22,17 +23,14 @@ const s3 = new AWS.S3({
 const uploadFileToS3 = async (file, path) => {
   console.log("Uploading file to S3");
   return new Promise((resolve, reject) => {
-    // Make sure we have the file data in the right format for S3
     const fileContent = file.data;
     if (!fileContent) {
       console.log("No file content found");
       return reject(new Error("No file content found"));
     }
 
-    // Generate a unique filename
     const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
 
-    // Set up the S3 upload parameters
     const params = {
       Bucket: process.env.AWS_S3_BUCKET_NAME,
       Key: fileName,
@@ -42,7 +40,6 @@ const uploadFileToS3 = async (file, path) => {
 
     console.log("S3 upload params prepared");
 
-    // Upload to S3
     s3.upload(params, (err, data) => {
       if (err) {
         console.log("S3 upload error:", err);
@@ -82,13 +79,17 @@ const deleteFileFromS3 = async (key) => {
   });
 };
 
-// Create a new lecture
-const createLecture = async function (req, res) {
+// Create a new lecture for a specific module
+const createLectureForModule = async function (req, res) {
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
   try {
+    await session.startTransaction();
+    transactionStarted = true;
+
     logger.info(
-      `Creating lecture for course ID: ${
-        req.params.courseId || req.body.course
-      }`
+      `Creating lecture for course ID: ${req.params.courseId}, module ID: ${req.params.moduleId}`
     );
 
     const teacher = await Teacher.findOne({ user: req.user.id });
@@ -97,12 +98,9 @@ const createLecture = async function (req, res) {
       return res.status(404).json({ error: "Teacher not found" });
     }
 
-    // Determine course ID from params or body
-    const courseId = req.params.courseId;
-    if (!courseId) {
-      return res.status(400).json({ error: "Course ID is required" });
-    }
+    const { courseId, moduleId } = req.params;
 
+    // Verify course ownership
     const course = await Course.findOne({
       _id: courseId,
       teacher: teacher._id,
@@ -113,6 +111,21 @@ const createLecture = async function (req, res) {
       return res.status(404).json({ error: "Course not found" });
     }
 
+    // Find the syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      logger.error(`Course syllabus not found for course: ${courseId}`);
+      return res.status(404).json({ error: "Course syllabus not found" });
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      logger.error(`Module not found with ID: ${moduleId}`);
+      return res.status(404).json({ error: "Module not found" });
+    }
+
     // Check if video file was uploaded
     if (!req.files || !req.files.video) {
       return res.status(400).json({ error: "Video file is required" });
@@ -120,87 +133,279 @@ const createLecture = async function (req, res) {
 
     // Upload video to S3
     const videoFile = req.files.video;
-    // Validate file type (ensure it's an mp4)
     if (!videoFile.mimetype.startsWith("video/")) {
       return res.status(400).json({ error: "Uploaded file must be a video" });
     }
 
-    // Upload to S3
-    const uploadPath = `courses/${course._id}/lectures`;
+    const uploadPath = `courses/${course._id}/modules/${moduleId}/lectures`;
     const uploadResult = await uploadFileToS3(videoFile, uploadPath);
 
-    // Create the lecture with default isReviewed = false and reviewDeadline = now + 7 days
+    // Get the next lecture order for this module
+    const existingLectures = await Lecture.find({
+      course: courseId,
+      syllabusModule: moduleId,
+    })
+      .sort({ lectureOrder: -1 })
+      .limit(1);
+
+    const nextOrder =
+      existingLectures.length > 0 ? existingLectures[0].lectureOrder + 1 : 1;
+
+    // Create the lecture
     const lectureData = {
       title: req.body.title,
       content: req.body.content,
       videoUrl: uploadResult.url,
       videoKey: uploadResult.key,
       course: course._id,
+      syllabusModule: moduleId,
+      moduleNumber: module.moduleNumber,
+      lectureOrder: nextOrder,
       isReviewed: req.body.isReviewed || false,
     };
 
-    // If manual review deadline is provided, use it
     if (req.body.reviewDeadline) {
       lectureData.reviewDeadline = new Date(req.body.reviewDeadline);
     }
 
     const lecture = new Lecture(lectureData);
-    await lecture.save();
+    await lecture.save({ session });
 
-    // Add lecture to course's lectures array
-    course.lectures.push(lecture._id);
-    await course.save();
+    // Add lecture to module's lectures array
+    module.lectures.push(lecture._id);
+    await syllabus.save({ session });
 
-    logger.info(`Created lecture ID: ${lecture._id}`);
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    logger.info(`Created lecture ID: ${lecture._id} for module: ${moduleId}`);
     res.status(201).json(lecture);
   } catch (error) {
-    logger.error("Error in createLecture:", error);
+    if (transactionStarted) {
+      await session.abortTransaction();
+    }
+    logger.error("Error in createLectureForModule:", error);
     res.status(400).json({ error: error.message });
+  } finally {
+    await session.endSession();
   }
 };
 
-// Update an existing lecture
-const updateLecture = async function (req, res) {
+// Get all lectures for a specific module
+const getModuleLectures = async function (req, res) {
   try {
-    const lectureId = req.params.lectureId || req.params.id;
+    logger.info(
+      `Fetching lectures for course ID: ${req.params.courseId}, module ID: ${req.params.moduleId}`
+    );
+
+    const { courseId, moduleId } = req.params;
+
+    // Verify user access to course
+    if (req.user.role === "teacher") {
+      const teacher = await Teacher.findOne({ user: req.user.id });
+      if (!teacher) {
+        return res.status(404).json({ error: "Teacher not found" });
+      }
+
+      const course = await Course.findOne({
+        _id: courseId,
+        teacher: teacher._id,
+      });
+
+      if (!course) {
+        return res.status(404).json({ error: "Course not found" });
+      }
+    } else if (req.user.role === "student") {
+      const student = await Student.findOne({ user: req.user.id });
+      if (!student) {
+        return res.status(404).json({ error: "Student not found" });
+      }
+
+      if (!student.courses.includes(courseId)) {
+        return res
+          .status(403)
+          .json({ error: "You are not enrolled in this course" });
+      }
+    }
+
+    // Find lectures for this module
+    const lectures = await Lecture.find({
+      course: courseId,
+      syllabusModule: moduleId,
+      isActive: true,
+    }).sort({ lectureOrder: 1 });
+
+    // Check for lectures that have passed their review deadline
+    const now = new Date();
+    const updatePromises = lectures.map(async (lecture) => {
+      if (
+        !lecture.isReviewed &&
+        lecture.reviewDeadline &&
+        now >= lecture.reviewDeadline
+      ) {
+        lecture.isReviewed = true;
+        await lecture.save();
+      }
+      return lecture;
+    });
+
+    await Promise.all(updatePromises);
+
+    // Re-fetch lectures to get updated data
+    const updatedLectures = await Lecture.find({
+      course: courseId,
+      syllabusModule: moduleId,
+      isActive: true,
+    }).sort({ lectureOrder: 1 });
+
+    res.json({
+      success: true,
+      moduleId,
+      courseId,
+      lectures: updatedLectures,
+    });
+  } catch (error) {
+    logger.error("Error in getModuleLectures:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get all lectures for a course organized by modules
+const getCourseModulesWithLectures = async function (req, res) {
+  try {
+    logger.info(
+      `Fetching all modules with lectures for course ID: ${req.params.courseId}`
+    );
+
+    const { courseId } = req.params;
+
+    // Verify user access to course
+    if (req.user.role === "teacher") {
+      const teacher = await Teacher.findOne({ user: req.user.id });
+      if (!teacher) {
+        return res.status(404).json({ error: "Teacher not found" });
+      }
+
+      const course = await Course.findOne({
+        _id: courseId,
+        teacher: teacher._id,
+      });
+
+      if (!course) {
+        return res.status(404).json({ error: "Course not found" });
+      }
+    } else if (req.user.role === "student") {
+      const student = await Student.findOne({ user: req.user.id });
+      if (!student) {
+        return res.status(404).json({ error: "Student not found" });
+      }
+
+      if (!student.courses.includes(courseId)) {
+        return res
+          .status(403)
+          .json({ error: "You are not enrolled in this course" });
+      }
+    }
+
+    // Get syllabus with modules
+    const syllabus = await CourseSyllabus.findOne({ course: courseId });
+    if (!syllabus) {
+      return res.status(404).json({ error: "Course syllabus not found" });
+    }
+
+    // Get all lectures for this course
+    const lectures = await Lecture.find({
+      course: courseId,
+      isActive: true,
+    }).sort({ moduleNumber: 1, lectureOrder: 1 });
+
+    // Check for lectures that have passed their review deadline
+    const now = new Date();
+    const updatePromises = lectures.map(async (lecture) => {
+      if (
+        !lecture.isReviewed &&
+        lecture.reviewDeadline &&
+        now >= lecture.reviewDeadline
+      ) {
+        lecture.isReviewed = true;
+        await lecture.save();
+      }
+      return lecture;
+    });
+
+    await Promise.all(updatePromises);
+
+    // Organize lectures by modules
+    const modulesWithLectures = syllabus.modules.map((module) => {
+      const moduleLectures = lectures.filter(
+        (lecture) => lecture.syllabusModule.toString() === module._id.toString()
+      );
+
+      return {
+        _id: module._id,
+        moduleNumber: module.moduleNumber,
+        moduleTitle: module.moduleTitle,
+        description: module.description,
+        topics: module.topics,
+        isActive: module.isActive,
+        lectures: moduleLectures,
+        lectureCount: moduleLectures.length,
+      };
+    });
+
+    res.json({
+      success: true,
+      courseId,
+      modules: modulesWithLectures,
+    });
+  } catch (error) {
+    logger.error("Error in getCourseModulesWithLectures:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Update a lecture
+const updateLecture = async function (req, res) {
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId, lectureId } = req.params;
     logger.info(`Updating lecture ID: ${lectureId}`);
 
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
       return res.status(404).json({ error: "Teacher not found" });
     }
 
-    // Find lecture and verify course ownership
+    // Find lecture and verify access
     const lecture = await Lecture.findById(lectureId);
     if (!lecture) {
-      logger.error(`Lecture not found with ID: ${lectureId}`);
       return res.status(404).json({ error: "Lecture not found" });
     }
 
-    // If courseId is in params, verify it matches lecture's course
-    if (
-      req.params.courseId &&
-      lecture.course.toString() !== req.params.courseId
-    ) {
-      logger.error(
-        `Lecture with ID ${lectureId} does not belong to course ${req.params.courseId}`
-      );
+    if (lecture.course.toString() !== courseId) {
       return res
         .status(403)
         .json({ error: "Lecture does not belong to specified course" });
     }
 
-    // Verify teacher has access to this lecture's course
+    if (lecture.syllabusModule.toString() !== moduleId) {
+      return res
+        .status(403)
+        .json({ error: "Lecture does not belong to specified module" });
+    }
+
+    // Verify teacher has access to this course
     const course = await Course.findOne({
-      _id: lecture.course,
+      _id: courseId,
       teacher: teacher._id,
     });
 
     if (!course) {
-      logger.error(
-        `Teacher does not have access to course for lecture: ${lectureId}`
-      );
       return res
         .status(403)
         .json({ error: "You don't have permission to update this lecture" });
@@ -209,12 +414,12 @@ const updateLecture = async function (req, res) {
     // Update lecture fields
     if (req.body.title) lecture.title = req.body.title;
     if (req.body.content) lecture.content = req.body.content;
+    if (req.body.lectureOrder) lecture.lectureOrder = req.body.lectureOrder;
 
     // Handle video file update if provided
     if (req.files && req.files.video) {
       const videoFile = req.files.video;
 
-      // Validate file type
       if (!videoFile.mimetype.startsWith("video/")) {
         return res.status(400).json({ error: "Uploaded file must be a video" });
       }
@@ -225,24 +430,22 @@ const updateLecture = async function (req, res) {
           await deleteFileFromS3(lecture.videoKey);
         } catch (deleteError) {
           logger.error("Error deleting old video file:", deleteError);
-          // Continue with upload even if delete fails
         }
       }
 
       // Upload new video to S3
-      const uploadPath = `courses/${course._id}/lectures`;
+      const uploadPath = `courses/${courseId}/modules/${moduleId}/lectures`;
       const uploadResult = await uploadFileToS3(videoFile, uploadPath);
 
       lecture.videoUrl = uploadResult.url;
       lecture.videoKey = uploadResult.key;
     }
 
-    // Handle the review status
+    // Handle review status
     if (req.body.isReviewed !== undefined) {
       lecture.isReviewed = req.body.isReviewed;
     }
 
-    // If review deadline is provided, update it
     if (req.body.reviewDeadline) {
       lecture.reviewDeadline = new Date(req.body.reviewDeadline);
     }
@@ -257,200 +460,155 @@ const updateLecture = async function (req, res) {
       lecture.isReviewed = true;
     }
 
-    await lecture.save();
+    await lecture.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
     logger.info(`Updated lecture ID: ${lecture._id}`);
     res.json(lecture);
   } catch (error) {
+    if (transactionStarted) {
+      await session.abortTransaction();
+    }
     logger.error("Error in updateLecture:", error);
     res.status(400).json({ error: error.message });
+  } finally {
+    await session.endSession();
   }
 };
-const getCourseLecturesByStudents = async function (req, res) {
+
+// Delete a lecture
+const deleteLecture = async function (req, res) {
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
   try {
-    logger.info(`Fetching lectures for course ID: ${req.params.courseId}`);
+    await session.startTransaction();
+    transactionStarted = true;
 
-    // Find the student based on authenticated user
-    const student = await Student.findOne({ user: req.user.id });
-    if (!student) {
-      logger.error(`Student not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Student not found" });
-    }
+    const { courseId, moduleId, lectureId } = req.params;
+    logger.info(`Deleting lecture ID: ${lectureId}`);
 
-    // Find the course by ID
-    const course = await Course.findById(req.params.courseId);
-    if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    // Check if student is enrolled in this course
-    if (!student.courses.includes(course._id)) {
-      logger.error(
-        `Student is not enrolled in course with ID: ${req.params.courseId}`
-      );
-      return res
-        .status(403)
-        .json({ error: "You are not enrolled in this course" });
-    }
-
-    // Find all lectures for this course
-    const lectures = await Lecture.find({
-      course: course._id,
-      // Add any additional criteria like isPublished if needed
-    }).select("title content videoUrl isReviewed createdAt updatedAt");
-
-    // Check for lectures that have passed their review deadline
-    const now = new Date();
-    const updatePromises = lectures.map(async (lecture) => {
-      if (
-        !lecture.isReviewed &&
-        lecture.reviewDeadline &&
-        now >= lecture.reviewDeadline
-      ) {
-        lecture.isReviewed = true;
-        await lecture.save();
-      }
-      return lecture;
-    });
-
-    // Wait for all updates to complete
-    await Promise.all(updatePromises);
-
-    // Re-fetch lectures to get updated data if needed
-    const updatedLectures = await Lecture.find({
-      course: course._id,
-      // Add any additional criteria if needed
-    }).select("title content videoUrl isReviewed createdAt updatedAt");
-
-    // Return the complete lecture information
-    res.json(updatedLectures);
-  } catch (error) {
-    logger.error("Error in getCourseLectures:", error);
-    res.status(500).json({ error: error.message });
-  }
-};
-// Get all lectures for a course
-const getCourseLectures = async function (req, res) {
-  try {
-    logger.info(`Fetching lectures for course ID: ${req.params.courseId}`);
-
-    // Find the teacher based on authenticated user
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
       return res.status(404).json({ error: "Teacher not found" });
     }
 
-    // Find the course by ID (only contains lecture IDs at this point)
+    // Verify course ownership
     const course = await Course.findOne({
-      _id: req.params.courseId,
+      _id: courseId,
       teacher: teacher._id,
     });
 
     if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
       return res.status(404).json({ error: "Course not found" });
     }
 
-    // Get the array of lecture IDs from the course
-    const lectureIds = course.lectures;
-
-    // Find all lectures using the array of IDs
-    const lectures = await Lecture.find({
-      _id: { $in: lectureIds },
+    // Find the lecture
+    const lecture = await Lecture.findOne({
+      _id: lectureId,
+      course: courseId,
+      syllabusModule: moduleId,
     });
-
-    // Check for lectures that have passed their review deadline
-    const now = new Date();
-    const updatePromises = lectures.map(async (lecture) => {
-      if (
-        !lecture.isReviewed &&
-        lecture.reviewDeadline &&
-        now >= lecture.reviewDeadline
-      ) {
-        lecture.isReviewed = true;
-        await lecture.save();
-      }
-      return lecture;
-    });
-
-    // Wait for all updates to complete
-    await Promise.all(updatePromises);
-
-    // Re-fetch lectures to get updated data
-    const updatedLectures = await Lecture.find({
-      _id: { $in: lectureIds },
-    });
-
-    // Return the complete lecture information
-    res.json(updatedLectures);
-  } catch (error) {
-    logger.error("Error in getCourseLectures:", error);
-    res.status(500).json({ error: error.message });
-  }
-};
-// Get a specific lecture
-const getLectureById = async function (req, res) {
-  try {
-    const lectureId = req.params.lectureId || req.params.id;
-    logger.info(`Fetching lecture ID: ${lectureId}`);
-
-    // First get the lecture
-    const lecture = await Lecture.findById(lectureId);
 
     if (!lecture) {
-      logger.error(`Lecture not found with ID: ${lectureId}`);
       return res.status(404).json({ error: "Lecture not found" });
     }
 
-    // If we're using nested routes, verify the course ID matches
-    if (
-      req.params.courseId &&
-      lecture.course.toString() !== req.params.courseId
-    ) {
-      logger.error(
-        `Lecture with ID ${lectureId} does not belong to course ${req.params.courseId}`
-      );
+    // Delete video from S3 if it exists
+    if (lecture.videoKey) {
+      try {
+        await deleteFileFromS3(lecture.videoKey);
+        logger.info(`Deleted video from S3: ${lecture.videoKey}`);
+      } catch (deleteError) {
+        logger.error("Error deleting video file:", deleteError);
+      }
+    }
+
+    // Remove lecture from syllabus module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (syllabus) {
+      const module = syllabus.modules.id(moduleId);
+      if (module) {
+        module.lectures = module.lectures.filter(
+          (id) => id.toString() !== lecture._id.toString()
+        );
+        await syllabus.save({ session });
+      }
+    }
+
+    // Delete the lecture
+    await Lecture.findByIdAndDelete(lecture._id).session(session);
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    logger.info(`Deleted lecture ID: ${lecture._id}`);
+    res.json({ message: "Lecture deleted successfully" });
+  } catch (error) {
+    if (transactionStarted) {
+      await session.abortTransaction();
+    }
+    logger.error("Error in deleteLecture:", error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    await session.endSession();
+  }
+};
+
+// Get a specific lecture
+const getLectureById = async function (req, res) {
+  try {
+    const { courseId, moduleId, lectureId } = req.params;
+    logger.info(`Fetching lecture ID: ${lectureId}`);
+
+    // Find the lecture
+    const lecture = await Lecture.findById(lectureId);
+
+    if (!lecture) {
+      return res.status(404).json({ error: "Lecture not found" });
+    }
+
+    // Verify lecture belongs to the specified course and module
+    if (lecture.course.toString() !== courseId) {
       return res
         .status(403)
         .json({ error: "Lecture does not belong to specified course" });
     }
 
-    // For teachers, verify they have access to this lecture's course
+    if (lecture.syllabusModule.toString() !== moduleId) {
+      return res
+        .status(403)
+        .json({ error: "Lecture does not belong to specified module" });
+    }
+
+    // Verify user access
     if (req.user.role === "teacher") {
       const teacher = await Teacher.findOne({ user: req.user.id });
       if (!teacher) {
-        logger.error(`Teacher not found for user ID: ${req.user.id}`);
         return res.status(404).json({ error: "Teacher not found" });
       }
 
       const course = await Course.findOne({
-        _id: lecture.course,
+        _id: courseId,
         teacher: teacher._id,
       });
 
       if (!course) {
-        logger.error(
-          `Teacher does not have access to course for lecture: ${lectureId}`
-        );
         return res
           .status(403)
           .json({ error: "You don't have permission to view this lecture" });
       }
-    }
-
-    // For students, verify they are enrolled in this course
-    if (req.user.role === "student") {
+    } else if (req.user.role === "student") {
       const student = await Student.findOne({ user: req.user.id });
       if (!student) {
-        logger.error(`Student not found for user ID: ${req.user.id}`);
         return res.status(404).json({ error: "Student not found" });
       }
 
-      if (!student.courses.includes(lecture.course)) {
-        logger.error(
-          `Student is not enrolled in course for lecture: ${lectureId}`
-        );
+      if (!student.courses.includes(courseId)) {
         return res
           .status(403)
           .json({ error: "You don't have permission to view this lecture" });
@@ -475,168 +633,69 @@ const getLectureById = async function (req, res) {
   }
 };
 
-// Delete a lecture
-const deleteLecture = async function (req, res) {
+// Update lecture order within a module
+const updateLectureOrder = async function (req, res) {
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
   try {
-    logger.info(`Deleting lecture ID: ${req.params.lectureId}`);
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId } = req.params;
+    const { lectureOrders } = req.body; // Array of {lectureId, order}
 
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
       return res.status(404).json({ error: "Teacher not found" });
     }
 
+    // Verify course ownership
     const course = await Course.findOne({
-      _id: req.params.courseId,
+      _id: courseId,
       teacher: teacher._id,
     });
 
     if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
       return res.status(404).json({ error: "Course not found" });
     }
 
-    const lecture = await Lecture.findOne({
-      _id: req.params.lectureId,
-      course: course._id,
-    });
-
-    if (!lecture) {
-      logger.error(`Lecture not found with ID: ${req.params.lectureId}`);
-      return res.status(404).json({ error: "Lecture not found" });
-    }
-
-    // Delete video from S3 if it exists
-    if (lecture.videoKey) {
-      try {
-        await deleteFileFromS3(lecture.videoKey);
-        logger.info(`Deleted video from S3: ${lecture.videoKey}`);
-      } catch (deleteError) {
-        logger.error("Error deleting video file:", deleteError);
-        // Continue with lecture deletion even if S3 delete fails
-      }
-    }
-
-    // Remove the lecture from the course's lectures array
-    course.lectures = course.lectures.filter((id) => !id.equals(lecture._id));
-    await course.save();
-
-    // Delete the lecture
-    await Lecture.findByIdAndDelete(lecture._id);
-    logger.info(`Deleted lecture ID: ${lecture._id}`);
-
-    res.json({ message: "Lecture deleted successfully" });
-  } catch (error) {
-    logger.error("Error in deleteLecture:", error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
-// Update lecture review status
-const updateLectureReviewStatus = async function (req, res) {
-  try {
-    logger.info(
-      `Updating review status for lecture ID: ${req.params.lectureId}`
+    // Update lecture orders
+    const updatePromises = lectureOrders.map(({ lectureId, order }) =>
+      Lecture.findOneAndUpdate(
+        {
+          _id: lectureId,
+          course: courseId,
+          syllabusModule: moduleId,
+        },
+        { lectureOrder: order },
+        { session }
+      )
     );
 
-    const teacher = await Teacher.findOne({ user: req.user.id });
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Teacher not found" });
-    }
+    await Promise.all(updatePromises);
 
-    const course = await Course.findOne({
-      _id: req.params.courseId,
-      teacher: teacher._id,
-    });
+    await session.commitTransaction();
+    transactionStarted = false;
 
-    if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    const lecture = await Lecture.findOne({
-      _id: req.params.lectureId,
-      course: course._id,
-    });
-
-    if (!lecture) {
-      logger.error(`Lecture not found with ID: ${req.params.lectureId}`);
-      return res.status(404).json({ error: "Lecture not found" });
-    }
-
-    // Update review status
-    lecture.isReviewed = req.body.isReviewed;
-
-    // If extending the review deadline
-    if (req.body.reviewDeadline) {
-      lecture.reviewDeadline = new Date(req.body.reviewDeadline);
-    }
-
-    await lecture.save();
-    logger.info(`Updated review status for lecture ID: ${lecture._id}`);
-
-    res.json(lecture);
+    res.json({ message: "Lecture order updated successfully" });
   } catch (error) {
-    logger.error("Error in updateLectureReviewStatus:", error);
+    if (transactionStarted) {
+      await session.abortTransaction();
+    }
+    logger.error("Error in updateLectureOrder:", error);
     res.status(400).json({ error: error.message });
-  }
-};
-
-// Update review status for all lectures in a course
-const updateAllLectureReviewStatuses = async function (req, res) {
-  try {
-    logger.info(
-      `Updating review status for all lectures in course ID: ${req.params.courseId}`
-    );
-
-    const teacher = await Teacher.findOne({ user: req.user.id });
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      return res.status(404).json({ error: "Teacher not found" });
-    }
-
-    const course = await Course.findOne({
-      _id: req.params.courseId,
-      teacher: teacher._id,
-    });
-
-    if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      return res.status(404).json({ error: "Course not found" });
-    }
-
-    // Update all lectures with passed review deadlines
-    const now = new Date();
-    const result = await Lecture.updateMany(
-      {
-        course: course._id,
-        isReviewed: false,
-        reviewDeadline: { $lte: now },
-      },
-      {
-        $set: { isReviewed: true },
-      }
-    );
-
-    logger.info(`Updated ${result.modifiedCount} lectures to reviewed status`);
-    res.json({
-      message: `${result.modifiedCount} lectures were marked as reviewed automatically`,
-      modifiedCount: result.modifiedCount,
-    });
-  } catch (error) {
-    logger.error("Error in updateAllLectureReviewStatuses:", error);
-    res.status(500).json({ error: error.message });
+  } finally {
+    await session.endSession();
   }
 };
 
 module.exports = {
-  createLecture,
+  createLectureForModule,
+  getModuleLectures,
+  getCourseModulesWithLectures,
   updateLecture,
-  getCourseLectures,
-  getLectureById,
   deleteLecture,
-  updateLectureReviewStatus,
-  updateAllLectureReviewStatuses,
-  getCourseLecturesByStudents,
+  getLectureById,
+  updateLectureOrder,
 };
