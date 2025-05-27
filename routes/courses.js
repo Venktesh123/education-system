@@ -7,12 +7,15 @@ const {
   updateCourse,
   deleteCourse,
   getEnrolledCourses,
+  getCourseWithModuleLectures, // Add the new function
 } = require("../controllers/courseController");
 const auth = require("../middleware/auth");
 const { checkRole } = require("../middleware/roleCheck");
 
-// Get all courses for teacher
+// Get all courses for teacher/student
 router.get("/", auth, checkRole(["teacher", "student"]), getUserCourses);
+
+// Get enrolled courses for students
 router.get(
   "/student",
   auth,
@@ -20,7 +23,15 @@ router.get(
   getEnrolledCourses
 );
 
-// Get specific course by ID
+// Get specific course by ID with module lectures
+router.get(
+  "/:courseId/modules-lectures",
+  auth,
+  checkRole(["teacher", "student"]),
+  getCourseWithModuleLectures
+);
+
+// Get specific course by ID (original)
 router.get(
   "/:courseId",
   auth,

@@ -147,9 +147,22 @@ const moduleSchema = new mongoose.Schema({
   // New field for all types of content
   contentItems: [contentItemSchema],
 
+  // NEW: Lectures for this module
+  lectures: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Lecture",
+    },
+  ],
+
+  // Module status and ordering
   isActive: {
     type: Boolean,
     default: true,
+  },
+  order: {
+    type: Number,
+    default: 0,
   },
 });
 
@@ -164,5 +177,8 @@ const courseSyllabusSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Index for efficient queries
+courseSyllabusSchema.index({ course: 1 });
 
 module.exports = mongoose.model("CourseSyllabus", courseSyllabusSchema);

@@ -4,6 +4,7 @@ const lectureSchema = new mongoose.Schema(
   {
     title: {
       type: String,
+      required: true,
     },
     content: {
       type: String,
@@ -17,6 +18,20 @@ const lectureSchema = new mongoose.Schema(
     course: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Course",
+      required: true,
+    },
+    // New field: reference to the syllabus module
+    syllabusModule: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+    },
+    moduleNumber: {
+      type: Number,
+      required: true,
+    },
+    lectureOrder: {
+      type: Number,
+      default: 1,
     },
     isReviewed: {
       type: Boolean,
@@ -30,6 +45,10 @@ const lectureSchema = new mongoose.Schema(
         deadline.setDate(deadline.getDate() + 7);
         return deadline;
       },
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
     },
   },
   { timestamps: true }
@@ -47,12 +66,9 @@ lectureSchema.pre("save", function (next) {
   next();
 });
 
-// Middleware to auto-mark as reviewed if deadline has passed when querying
-lectureSchema.pre("find", function () {
-  this.setOptions({
-    runValidators: true,
-  });
-});
+// Index for efficient queries
+lectureSchema.index({ course: 1, syllabusModule: 1, lectureOrder: 1 });
+lectureSchema.index({ course: 1, moduleNumber: 1, lectureOrder: 1 });
 
 // Static method to update all lectures past their review deadline
 lectureSchema.statics.updateReviewStatus = async function () {
