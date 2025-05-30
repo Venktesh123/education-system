@@ -10,7 +10,10 @@ const CreditPoints = require("../models/CreditPoints");
 const Assignment = require("../models/Assignment");
 const CourseAttendance = require("../models/CourseAttendance");
 const mongoose = require("mongoose");
-const AWS = require("aws-sdk");
+const {
+  uploadFileToAzure,
+  deleteFileFromAzure,
+} = require("../utils/azureConfig");
 
 // Better logging setup
 const logger = {
@@ -18,16 +21,9 @@ const logger = {
   error: (message, error) => console.error(`[ERROR] ${message}`, error),
 };
 
-// Configure AWS SDK
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-// Upload file to S3
-const uploadFileToS3 = async (file, path) => {
-  console.log("Uploading file to S3");
+// Upload file to Azure
+const uploadFileToAzureStorage = async (file, path) => {
+  console.log("Uploading file to Azure");
   return new Promise((resolve, reject) => {
     const fileContent = file.data;
     if (!fileContent) {
@@ -37,51 +33,40 @@ const uploadFileToS3 = async (file, path) => {
 
     const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
 
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileName,
-      Body: fileContent,
-      ContentType: file.mimetype,
-    };
-
-    console.log("S3 upload params prepared");
-
-    s3.upload(params, (err, data) => {
-      if (err) {
-        console.log("S3 upload error:", err);
-        return reject(err);
-      }
-      console.log("File uploaded successfully:", fileName);
-      resolve({
-        url: data.Location,
-        key: data.Key,
+    // Use the Azure upload function
+    uploadFileToAzure(file, path)
+      .then((result) => {
+        console.log("File uploaded successfully:", fileName);
+        resolve({
+          url: result.url,
+          key: result.key,
+        });
+      })
+      .catch((err) => {
+        console.log("Azure upload error:", err);
+        reject(err);
       });
-    });
   });
 };
 
-// Delete file from S3
-const deleteFileFromS3 = async (key) => {
-  console.log("Deleting file from S3:", key);
+// Delete file from Azure
+const deleteFileFromAzureStorage = async (key) => {
+  console.log("Deleting file from Azure:", key);
   return new Promise((resolve, reject) => {
     if (!key) {
       console.log("No file key provided");
       return resolve({ message: "No file key provided" });
     }
 
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: key,
-    };
-
-    s3.deleteObject(params, (err, data) => {
-      if (err) {
-        console.log("S3 delete error:", err);
-        return reject(err);
-      }
-      console.log("File deleted successfully from S3");
-      resolve(data);
-    });
+    deleteFileFromAzure(key)
+      .then((result) => {
+        console.log("File deleted successfully from Azure");
+        resolve(result);
+      })
+      .catch((err) => {
+        console.log("Azure delete error:", err);
+        reject(err);
+      });
   });
 };
 
@@ -1350,8 +1335,8 @@ const deleteCourse = async function (req, res) {
     for (const lecture of lectures) {
       if (lecture.videoKey) {
         try {
-          await deleteFileFromS3(lecture.videoKey);
-          logger.info(`Deleted video from S3: ${lecture.videoKey}`);
+          await deleteFileFromAzureStorage(lecture.videoKey);
+          logger.info(`Deleted video from Azure: ${lecture.videoKey}`);
         } catch (deleteError) {
           logger.error("Error deleting video file:", deleteError);
         }
