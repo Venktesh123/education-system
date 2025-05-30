@@ -5,18 +5,14 @@ const Teacher = require("../models/Teacher");
 const Student = require("../models/Student");
 const { ErrorHandler } = require("../middleware/errorHandler");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
-const AWS = require("aws-sdk");
+const {
+  uploadFileToAzure,
+  deleteFileFromAzure,
+} = require("../utils/azureConfig");
 
-// Configure AWS S3
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-// Helper function for uploading files to S3
-const uploadFileToS3 = async (file, path) => {
-  console.log("Uploading file to S3");
+// Helper function for uploading files to Azure
+const uploadFileToAzureStorage = async (file, path) => {
+  console.log("Uploading file to Azure");
   return new Promise((resolve, reject) => {
     const fileContent = file.data;
     if (!fileContent) {
@@ -25,50 +21,40 @@ const uploadFileToS3 = async (file, path) => {
     }
 
     const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileName,
-      Body: fileContent,
-      ContentType: file.mimetype,
-    };
 
-    console.log("S3 upload params prepared");
-    s3.upload(params, (err, data) => {
-      if (err) {
-        console.log("S3 upload error:", err);
-        return reject(err);
-      }
-      console.log("File uploaded successfully:", fileName);
-      resolve({
-        url: data.Location,
-        key: data.Key,
+    uploadFileToAzure(file, path)
+      .then((result) => {
+        console.log("File uploaded successfully:", fileName);
+        resolve({
+          url: result.url,
+          key: result.key,
+        });
+      })
+      .catch((err) => {
+        console.log("Azure upload error:", err);
+        reject(err);
       });
-    });
   });
 };
 
-// Helper function to delete files from S3
-const deleteFileFromS3 = async (fileKey) => {
-  console.log("Deleting file from S3:", fileKey);
+// Helper function to delete files from Azure
+const deleteFileFromAzureStorage = async (fileKey) => {
+  console.log("Deleting file from Azure:", fileKey);
   return new Promise((resolve, reject) => {
     if (!fileKey) {
       console.log("No file key provided");
       return resolve({ message: "No file key provided" });
     }
 
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileKey,
-    };
-
-    s3.deleteObject(params, (err, data) => {
-      if (err) {
-        console.log("S3 delete error:", err);
-        return reject(err);
-      }
-      console.log("File deleted successfully from S3");
-      resolve(data);
-    });
+    deleteFileFromAzure(fileKey)
+      .then((result) => {
+        console.log("File deleted successfully from Azure");
+        resolve(result);
+      })
+      .catch((err) => {
+        console.log("Azure delete error:", err);
+        reject(err);
+      });
   });
 };
 
@@ -159,9 +145,9 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
           }
         }
 
-        // Upload files to S3
+        // Upload files to Azure
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToS3(file, "discussion-attachments")
+          uploadFileToAzureStorage(file, "discussion-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -175,7 +161,12 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
         }));
       } catch (uploadError) {
         console.error("Error uploading files:", uploadError);
-        return next(new ErrorHandler("Failed to upload files", 500));
+        return next(
+          new ErrorHandler(
+            uploadError.message || "Failed to upload files",
+            uploadError.statusCode || 500
+          )
+        );
       }
     }
 
@@ -470,9 +461,9 @@ exports.addComment = catchAsyncErrors(async (req, res, next) => {
           }
         }
 
-        // Upload files to S3
+        // Upload files to Azure
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToS3(file, "comment-attachments")
+          uploadFileToAzureStorage(file, "comment-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -649,9 +640,9 @@ exports.addReplyToComment = catchAsyncErrors(async (req, res, next) => {
           }
         }
 
-        // Upload files to S3
+        // Upload files to Azure
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToS3(file, "comment-attachments")
+          uploadFileToAzureStorage(file, "comment-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -759,9 +750,9 @@ exports.updateDiscussion = catchAsyncErrors(async (req, res, next) => {
           }
         }
 
-        // Upload files to S3
+        // Upload files to Azure
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToS3(file, "discussion-attachments")
+          uploadFileToAzureStorage(file, "discussion-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -791,13 +782,13 @@ exports.updateDiscussion = catchAsyncErrors(async (req, res, next) => {
         removeIds.includes(att._id.toString())
       );
 
-      // Delete files from S3
+      // Delete files from Azure
       for (const attachment of attachmentsToRemove) {
         try {
-          await deleteFileFromS3(attachment.fileKey);
+          await deleteFileFromAzureStorage(attachment.fileKey);
         } catch (deleteError) {
-          console.error("Error deleting file from S3:", deleteError);
-          // Continue with update even if S3 deletion fails
+          console.error("Error deleting file from Azure:", deleteError);
+          // Continue with update even if Azure deletion fails
         }
       }
 
@@ -912,9 +903,9 @@ exports.updateComment = catchAsyncErrors(async (req, res, next) => {
           }
         }
 
-        // Upload files to S3
+        // Upload files to Azure
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToS3(file, "comment-attachments")
+          uploadFileToAzureStorage(file, "comment-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -947,13 +938,13 @@ exports.updateComment = catchAsyncErrors(async (req, res, next) => {
         removeIds.includes(att._id.toString())
       );
 
-      // Delete files from S3
+      // Delete files from Azure
       for (const attachment of attachmentsToRemove) {
         try {
-          await deleteFileFromS3(attachment.fileKey);
+          await deleteFileFromAzureStorage(attachment.fileKey);
         } catch (deleteError) {
-          console.error("Error deleting file from S3:", deleteError);
-          // Continue with update even if S3 deletion fails
+          console.error("Error deleting file from Azure:", deleteError);
+          // Continue with update even if Azure deletion fails
         }
       }
 
@@ -1055,8 +1046,8 @@ exports.deleteComment = catchAsyncErrors(async (req, res, next) => {
     result.comment.isDeleted = true;
     result.comment.content = "This comment has been deleted";
 
-    // Keep attachments reference for auditing purposes, but we could delete them from S3 to save storage
-    // For now, we'll leave S3 cleanup to a separate background process or admin function
+    // Keep attachments reference for auditing purposes, but we could delete them from Azure to save storage
+    // For now, we'll leave Azure cleanup to a separate background process or admin function
 
     await discussion.save({ session });
 
@@ -1112,7 +1103,7 @@ exports.deleteDiscussion = catchAsyncErrors(async (req, res, next) => {
       );
     }
 
-    // Delete all attachments from S3 (both from the discussion itself and its comments)
+    // Delete all attachments from Azure (both from the discussion itself and its comments)
     const allAttachments = [...discussion.attachments];
 
     // Function to collect all attachments from comments and their replies
@@ -1132,13 +1123,13 @@ exports.deleteDiscussion = catchAsyncErrors(async (req, res, next) => {
     // Add comment attachments
     allAttachments.push(...collectAttachments(discussion.comments));
 
-    // Delete files from S3
+    // Delete files from Azure
     for (const attachment of allAttachments) {
       try {
-        await deleteFileFromS3(attachment.fileKey);
+        await deleteFileFromAzureStorage(attachment.fileKey);
       } catch (deleteError) {
-        console.error("Error deleting file from S3:", deleteError);
-        // Continue with deletion even if S3 deletion fails
+        console.error("Error deleting file from Azure:", deleteError);
+        // Continue with deletion even if Azure deletion fails
       }
     }
 
