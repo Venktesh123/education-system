@@ -4,49 +4,10 @@ const CourseSyllabus = require("../models/CourseSyllabus");
 const Teacher = require("../models/Teacher");
 const { ErrorHandler } = require("../middleware/errorHandler");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
-const AWS = require("aws-sdk");
-
-// Configure AWS S3
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-// Upload file to S3
-const uploadFileToS3 = async (file, path) => {
-  console.log("Uploading file to S3");
-  return new Promise((resolve, reject) => {
-    // Make sure we have the file data in the right format for S3
-    const fileContent = file.data;
-    if (!fileContent) {
-      console.log("No file content found");
-      return reject(new Error("No file content found"));
-    }
-    // Generate a unique filename
-    const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-    // Set up the S3 upload parameters without ACL
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileName,
-      Body: fileContent,
-      ContentType: file.mimetype,
-    };
-    console.log("S3 upload params prepared");
-    // Upload to S3
-    s3.upload(params, (err, data) => {
-      if (err) {
-        console.log("S3 upload error:", err);
-        return reject(err);
-      }
-      console.log("File uploaded successfully:", fileName);
-      resolve({
-        url: data.Location,
-        key: data.Key,
-      });
-    });
-  });
-};
+const {
+  uploadFileToAzure,
+  deleteFileFromAzure,
+} = require("../utils/azureConfig");
 
 // Function to handle file uploads
 const handleFileUploads = async (files, allowedTypes, path, next) => {
@@ -79,9 +40,11 @@ const handleFileUploads = async (files, allowedTypes, path, next) => {
     }
   }
 
-  // Upload files to S3
-  console.log("Starting file uploads to S3");
-  const uploadPromises = filesArray.map((file) => uploadFileToS3(file, path));
+  // Upload files to Azure
+  console.log("Starting file uploads to Azure");
+  const uploadPromises = filesArray.map((file) =>
+    uploadFileToAzure(file, path)
+  );
 
   const uploadedFiles = await Promise.all(uploadPromises);
   console.log(`Successfully uploaded ${uploadedFiles.length} files`);
@@ -585,19 +548,15 @@ exports.updateContentItem = catchAsyncErrors(async (req, res, next) => {
             const file = filesArray[0];
             const uploadedFile = uploadedFiles[0];
 
-            // Delete old file from S3 if it exists
+            // Delete old file from Azure if it exists
             if (contentItem.fileKey) {
               try {
-                console.log(`Deleting file from S3: ${contentItem.fileKey}`);
-                const params = {
-                  Bucket: process.env.AWS_S3_BUCKET_NAME,
-                  Key: contentItem.fileKey,
-                };
-                await s3.deleteObject(params).promise();
-                console.log("Old file deleted from S3");
-              } catch (s3Error) {
-                console.error("Error deleting file from S3:", s3Error);
-                // Continue with update even if S3 deletion fails
+                console.log(`Deleting file from Azure: ${contentItem.fileKey}`);
+                await deleteFileFromAzure(contentItem.fileKey);
+                console.log("Old file deleted from Azure");
+              } catch (azureError) {
+                console.error("Error deleting file from Azure:", azureError);
+                // Continue with update even if Azure deletion fails
               }
             }
 
@@ -670,19 +629,17 @@ exports.updateContentItem = catchAsyncErrors(async (req, res, next) => {
 
             const uploadedFile = uploadedFiles[0];
 
-            // Delete old video from S3 if it exists
+            // Delete old video from Azure if it exists
             if (contentItem.videoKey) {
               try {
-                console.log(`Deleting video from S3: ${contentItem.videoKey}`);
-                const params = {
-                  Bucket: process.env.AWS_S3_BUCKET_NAME,
-                  Key: contentItem.videoKey,
-                };
-                await s3.deleteObject(params).promise();
-                console.log("Old video deleted from S3");
-              } catch (s3Error) {
-                console.error("Error deleting video from S3:", s3Error);
-                // Continue with update even if S3 deletion fails
+                console.log(
+                  `Deleting video from Azure: ${contentItem.videoKey}`
+                );
+                await deleteFileFromAzure(contentItem.videoKey);
+                console.log("Old video deleted from Azure");
+              } catch (azureError) {
+                console.error("Error deleting video from Azure:", azureError);
+                // Continue with update even if Azure deletion fails
               }
             }
 
@@ -815,24 +772,19 @@ exports.deleteContentItem = catchAsyncErrors(async (req, res, next) => {
 
     const contentItem = module.contentItems[contentIndex];
 
-    // Delete file from S3 if it's a file or video
+    // Delete file from Azure if it's a file or video
     if (
       (contentItem.type === "file" && contentItem.fileKey) ||
       (contentItem.type === "video" && contentItem.videoKey)
     ) {
       const fileKey = contentItem.fileKey || contentItem.videoKey;
       try {
-        console.log(`Deleting file from S3: ${fileKey}`);
-        const params = {
-          Bucket: process.env.AWS_S3_BUCKET_NAME,
-          Key: fileKey,
-        };
-
-        await s3.deleteObject(params).promise();
-        console.log("File deleted from S3");
-      } catch (s3Error) {
-        console.error("Error deleting file from S3:", s3Error);
-        // Continue with the database deletion even if S3 deletion fails
+        console.log(`Deleting file from Azure: ${fileKey}`);
+        await deleteFileFromAzure(fileKey);
+        console.log("File deleted from Azure");
+      } catch (azureError) {
+        console.error("Error deleting file from Azure:", azureError);
+        // Continue with the database deletion even if Azure deletion fails
       }
     }
 
@@ -875,7 +827,5 @@ exports.deleteContentItem = catchAsyncErrors(async (req, res, next) => {
     console.log("Session ended");
   }
 });
-
-// Maintain backward compatibility with old APIs
 
 module.exports = exports;
