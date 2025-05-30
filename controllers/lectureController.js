@@ -55,6 +55,41 @@ const withRetry = async (operation, maxRetries = 3, baseDelay = 1000) => {
   throw lastError;
 };
 
+// Helper function to validate video file
+const validateVideoFile = (videoFile) => {
+  // Check if file exists
+  if (!videoFile) {
+    throw new Error("Video file is required");
+  }
+
+  // Check file type
+  if (!videoFile.mimetype || !videoFile.mimetype.startsWith("video/")) {
+    throw new Error("Uploaded file must be a video");
+  }
+
+  // Validate file size (500MB limit)
+  const maxSize = 500 * 1024 * 1024; // 500MB
+  if (videoFile.size > maxSize) {
+    throw new Error(
+      `Video file too large. Maximum size is ${maxSize / (1024 * 1024)}MB`
+    );
+  }
+
+  // Check if file has data
+  if (!videoFile.data || videoFile.data.length === 0) {
+    throw new Error("Video file appears to be empty");
+  }
+
+  return true;
+};
+
+// Helper function to generate Azure path
+const generateAzurePath = (courseId, moduleId, fileName) => {
+  // Sanitize filename to remove special characters
+  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+  return `lectures/course-${courseId}/module-${moduleId}/${sanitizedFileName}`;
+};
+
 // Create a new lecture for a specific module
 const createLectureForModule = async function (req, res) {
   let uploadedVideoKey = null;
@@ -97,7 +132,7 @@ const createLectureForModule = async function (req, res) {
     }
 
     // Validate input
-    if (!req.body.title) {
+    if (!req.body.title || req.body.title.trim() === "") {
       return res.status(400).json({ error: "Lecture title is required" });
     }
 
@@ -107,29 +142,65 @@ const createLectureForModule = async function (req, res) {
     }
 
     const videoFile = req.files.video;
-    if (!videoFile.mimetype.startsWith("video/")) {
-      return res.status(400).json({ error: "Uploaded file must be a video" });
+    logger.info(
+      `Processing video file: ${videoFile.name}, size: ${videoFile.size} bytes`
+    );
+
+    // Validate video file
+    try {
+      validateVideoFile(videoFile);
+    } catch (validationError) {
+      return res.status(400).json({ error: validationError.message });
     }
 
-    // Validate file size (e.g., 500MB limit)
-    const maxSize = 500 * 1024 * 1024; // 500MB
-    if (videoFile.size > maxSize) {
-      return res.status(400).json({
-        error: `Video file too large. Maximum size is ${
-          maxSize / (1024 * 1024)
-        }MB`,
+    // For large files, send immediate response and process in background
+    const isLargeFile = videoFile.size > 50 * 1024 * 1024; // 50MB threshold
+
+    if (isLargeFile) {
+      logger.info("Large file detected, processing in background");
+
+      // Send immediate response for large files
+      res.status(202).json({
+        success: true,
+        message: "Large video upload initiated. Processing in background...",
+        status: "processing",
+        fileSize: videoFile.size,
+        fileName: videoFile.name,
+        estimatedTime: "This may take several minutes depending on file size",
       });
+
+      // Process large file upload in background
+      processLargeVideoUpload(
+        videoFile,
+        courseId,
+        moduleId,
+        course,
+        module,
+        req.body,
+        teacher._id
+      ).catch((error) => {
+        logger.error("Background upload failed:", error);
+        // Here you could implement notification system to inform user of failure
+      });
+
+      return;
     }
+
+    // For smaller files, process synchronously
+    logger.info("Small file detected, processing synchronously");
 
     // STEP 1: Upload video to Azure FIRST (outside transaction)
     logger.info("Uploading video to Azure Blob Storage");
-    const uploadPath = `lectures/course-${courseId}/module-${moduleId}`;
+
+    // Generate Azure path with original filename
+    const azurePath = generateAzurePath(courseId, moduleId, videoFile.name);
 
     let uploadResult;
     try {
-      uploadResult = await uploadFileToAzure(videoFile, uploadPath);
+      uploadResult = await uploadFileToAzure(videoFile, azurePath);
       uploadedVideoKey = uploadResult.key; // Store for cleanup if needed
       logger.info(`Video uploaded successfully: ${uploadResult.key}`);
+      logger.info(`Video URL: ${uploadResult.url}`);
     } catch (uploadError) {
       logger.error("Video upload failed:", uploadError);
       return res.status(500).json({
@@ -138,87 +209,40 @@ const createLectureForModule = async function (req, res) {
       });
     }
 
-    // STEP 2: Database operations with retry logic
-    const result = await withRetry(async () => {
-      const session = await mongoose.startSession();
-      let transactionStarted = false;
+    // STEP 2: Quick database operations without long transaction
+    const result = await createLectureRecord(
+      uploadResult,
+      videoFile,
+      courseId,
+      moduleId,
+      course,
+      module,
+      req.body
+    );
 
-      try {
-        await session.startTransaction();
-        transactionStarted = true;
-        logger.info("Database transaction started");
+    logger.info(
+      `Successfully created lecture ID: ${result._id} for module: ${moduleId}`
+    );
 
-        // Get the next lecture order for this module
-        const existingLectures = await Lecture.find({
-          course: courseId,
-          syllabusModule: moduleId,
-        })
-          .sort({ lectureOrder: -1 })
-          .limit(1)
-          .session(session);
-
-        const nextOrder =
-          existingLectures.length > 0
-            ? existingLectures[0].lectureOrder + 1
-            : 1;
-
-        // Create the lecture
-        const lectureData = {
-          title: req.body.title,
-          content: req.body.content || "",
-          videoUrl: uploadResult.url,
-          videoKey: uploadResult.key,
-          course: course._id,
-          syllabusModule: moduleId,
-          moduleNumber: module.moduleNumber,
-          lectureOrder: nextOrder,
-          isReviewed: req.body.isReviewed || false,
-        };
-
-        if (req.body.reviewDeadline) {
-          lectureData.reviewDeadline = new Date(req.body.reviewDeadline);
-        }
-
-        const lecture = new Lecture(lectureData);
-        await lecture.save({ session });
-
-        // Add lecture to module's lectures array
-        module.lectures.push(lecture._id);
-
-        // Re-fetch syllabus within session to avoid conflicts
-        const syllabusInSession = await CourseSyllabus.findOne({
-          course: courseId,
-        }).session(session);
-        const moduleInSession = syllabusInSession.modules.id(moduleId);
-        moduleInSession.lectures.push(lecture._id);
-        await syllabusInSession.save({ session });
-
-        await session.commitTransaction();
-        transactionStarted = false;
-        logger.info("Database transaction committed successfully");
-
-        return lecture;
-      } catch (dbError) {
-        if (transactionStarted) {
-          try {
-            await session.abortTransaction();
-            logger.info("Database transaction aborted");
-          } catch (abortError) {
-            logger.error("Error aborting transaction:", abortError);
-          }
-        }
-        throw dbError;
-      } finally {
-        await session.endSession();
-        logger.info("Database session ended");
-      }
-    });
-
-    logger.info(`Created lecture ID: ${result._id} for module: ${moduleId}`);
+    // Return success response with lecture details
     res.status(201).json({
       success: true,
-      lecture: result,
       message: "Lecture created successfully",
+      lecture: {
+        _id: result._id,
+        title: result.title,
+        content: result.content,
+        videoUrl: result.videoUrl,
+        originalVideoName: videoFile.name,
+        course: result.course,
+        syllabusModule: result.syllabusModule,
+        moduleNumber: result.moduleNumber,
+        lectureOrder: result.lectureOrder,
+        isReviewed: result.isReviewed,
+        reviewDeadline: result.reviewDeadline,
+        createdAt: result.createdAt,
+        updatedAt: result.updatedAt,
+      },
     });
   } catch (error) {
     logger.error("Error in createLectureForModule:", error);
@@ -235,7 +259,167 @@ const createLectureForModule = async function (req, res) {
       }
     }
 
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      error: error.message,
+      details: process.env.NODE_ENV === "development" ? error.stack : undefined,
+    });
+  }
+};
+
+// Helper function to create lecture record in database
+const createLectureRecord = async (
+  uploadResult,
+  videoFile,
+  courseId,
+  moduleId,
+  course,
+  module,
+  body
+) => {
+  // Use shorter transaction timeout and simpler operations
+  const session = await mongoose.startSession();
+
+  try {
+    await session.startTransaction({
+      readConcern: { level: "majority" },
+      writeConcern: { w: "majority", wtimeout: 10000 }, // 10 second timeout
+    });
+
+    logger.info("Database transaction started for lecture creation");
+
+    // Get the next lecture order for this module (simplified query)
+    const lectureCount = await Lecture.countDocuments({
+      course: courseId,
+      syllabusModule: moduleId,
+    }).session(session);
+
+    const nextOrder = lectureCount + 1;
+    logger.info(`Next lecture order for module ${moduleId}: ${nextOrder}`);
+
+    // Create the lecture with video info
+    const lectureData = {
+      title: body.title.trim(),
+      content: body.content || "",
+      videoUrl: uploadResult.url,
+      videoKey: uploadResult.key,
+      originalVideoName: videoFile.name,
+      videoSize: uploadResult.size || videoFile.size,
+      videoContentType: uploadResult.contentType || videoFile.mimetype,
+      course: course._id,
+      syllabusModule: moduleId,
+      moduleNumber: module.moduleNumber,
+      lectureOrder: nextOrder,
+      isReviewed: body.isReviewed || false,
+      uploadMetadata: {
+        uploadDate: new Date(),
+        azureRequestId: uploadResult.requestId,
+        azureETag: uploadResult.etag,
+      },
+    };
+
+    // Set review deadline if provided
+    if (body.reviewDeadline) {
+      lectureData.reviewDeadline = new Date(body.reviewDeadline);
+    }
+
+    const lecture = new Lecture(lectureData);
+    await lecture.save({ session });
+    logger.info(`Lecture created with ID: ${lecture._id}`);
+
+    // Update syllabus module with new lecture (single operation)
+    await CourseSyllabus.findOneAndUpdate(
+      {
+        course: courseId,
+        "modules._id": moduleId,
+      },
+      {
+        $push: { "modules.$.lectures": lecture._id },
+      },
+      { session }
+    );
+
+    logger.info(
+      `Lecture ${lecture._id} added to module ${moduleId} in syllabus`
+    );
+
+    await session.commitTransaction();
+    logger.info("Database transaction committed successfully");
+
+    return lecture;
+  } catch (dbError) {
+    try {
+      await session.abortTransaction();
+      logger.info("Database transaction aborted");
+    } catch (abortError) {
+      logger.error("Error aborting transaction:", abortError);
+    }
+    throw dbError;
+  } finally {
+    await session.endSession();
+    logger.info("Database session ended");
+  }
+};
+
+// Background processing function for large video uploads
+const processLargeVideoUpload = async (
+  videoFile,
+  courseId,
+  moduleId,
+  course,
+  module,
+  body,
+  teacherId
+) => {
+  let uploadedVideoKey = null;
+
+  try {
+    logger.info(`Starting background upload for large file: ${videoFile.name}`);
+
+    // Generate Azure path with original filename
+    const azurePath = generateAzurePath(courseId, moduleId, videoFile.name);
+
+    // Upload to Azure (this can take a long time for large files)
+    const uploadResult = await uploadFileToAzure(videoFile, azurePath);
+    uploadedVideoKey = uploadResult.key;
+    logger.info(`Large video uploaded successfully: ${uploadResult.key}`);
+
+    // Create lecture record in database
+    const lecture = await createLectureRecord(
+      uploadResult,
+      videoFile,
+      courseId,
+      moduleId,
+      course,
+      module,
+      body
+    );
+
+    logger.info(
+      `Background upload completed successfully. Lecture ID: ${lecture._id}`
+    );
+
+    // Here you could implement a notification system to inform the user
+    // For example, using WebSockets, email, or updating a status table
+  } catch (error) {
+    logger.error("Background upload failed:", error);
+
+    // Clean up uploaded video if database operation failed
+    if (uploadedVideoKey) {
+      try {
+        await deleteFileFromAzure(uploadedVideoKey);
+        logger.info(
+          `Cleaned up video after background upload failure: ${uploadedVideoKey}`
+        );
+      } catch (cleanupError) {
+        logger.error(
+          "Error cleaning up video after background failure:",
+          cleanupError
+        );
+      }
+    }
+
+    // Here you could implement error notification to user
+    throw error;
   }
 };
 
@@ -305,6 +489,10 @@ const getModuleLectures = async function (req, res) {
       syllabusModule: moduleId,
       isActive: true,
     }).sort({ lectureOrder: 1 });
+
+    logger.info(
+      `Found ${updatedLectures.length} lectures for module ${moduleId}`
+    );
 
     res.json({
       success: true,
@@ -459,32 +647,29 @@ const updateLecture = async function (req, res) {
     // Handle video file update if provided
     if (req.files && req.files.video) {
       const videoFile = req.files.video;
+      logger.info(
+        `Updating video file: ${videoFile.name}, size: ${videoFile.size} bytes`
+      );
 
-      if (!videoFile.mimetype.startsWith("video/")) {
-        return res.status(400).json({ error: "Uploaded file must be a video" });
-      }
-
-      // Validate file size
-      const maxSize = 500 * 1024 * 1024; // 500MB
-      if (videoFile.size > maxSize) {
-        return res.status(400).json({
-          error: `Video file too large. Maximum size is ${
-            maxSize / (1024 * 1024)
-          }MB`,
-        });
+      // Validate new video file
+      try {
+        validateVideoFile(videoFile);
+      } catch (validationError) {
+        return res.status(400).json({ error: validationError.message });
       }
 
       // Upload new video to Azure first
-      const uploadPath = `lectures/course-${courseId}/module-${moduleId}`;
+      const azurePath = generateAzurePath(courseId, moduleId, videoFile.name);
 
       try {
-        const uploadResult = await uploadFileToAzure(videoFile, uploadPath);
+        const uploadResult = await uploadFileToAzure(videoFile, azurePath);
         newVideoKey = uploadResult.key;
         oldVideoKey = lecture.videoKey; // Store old key for cleanup
 
         // Update lecture with new video info
         lecture.videoUrl = uploadResult.url;
         lecture.videoKey = uploadResult.key;
+        lecture.originalVideoName = videoFile.name;
 
         logger.info(`New video uploaded: ${uploadResult.key}`);
       } catch (uploadError) {
@@ -497,9 +682,15 @@ const updateLecture = async function (req, res) {
     }
 
     // Update other lecture fields
-    if (req.body.title) lecture.title = req.body.title;
-    if (req.body.content !== undefined) lecture.content = req.body.content;
-    if (req.body.lectureOrder) lecture.lectureOrder = req.body.lectureOrder;
+    if (req.body.title && req.body.title.trim() !== "") {
+      lecture.title = req.body.title.trim();
+    }
+    if (req.body.content !== undefined) {
+      lecture.content = req.body.content;
+    }
+    if (req.body.lectureOrder) {
+      lecture.lectureOrder = req.body.lectureOrder;
+    }
 
     // Handle review status
     if (req.body.isReviewed !== undefined) {
@@ -557,8 +748,8 @@ const updateLecture = async function (req, res) {
     logger.info(`Updated lecture ID: ${lecture._id}`);
     res.json({
       success: true,
-      lecture,
       message: "Lecture updated successfully",
+      lecture,
     });
   } catch (error) {
     logger.error("Error in updateLecture:", error);
@@ -626,7 +817,7 @@ const deleteLecture = async function (req, res) {
         }).session(session);
         if (syllabus) {
           const module = syllabus.modules.id(moduleId);
-          if (module) {
+          if (module && module.lectures) {
             module.lectures = module.lectures.filter(
               (id) => id.toString() !== lecture._id.toString()
             );
