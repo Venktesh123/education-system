@@ -4,79 +4,15 @@ const Student = require("../models/Student");
 const Lecture = require("../models/Lecture");
 const CourseSyllabus = require("../models/CourseSyllabus");
 const mongoose = require("mongoose");
-const AWS = require("aws-sdk");
+const {
+  uploadFileToAzure,
+  deleteFileFromAzure,
+} = require("../utils/azureConfig");
 
 // Better logging setup
 const logger = {
   info: (message) => console.log(`[INFO] ${message}`),
   error: (message, error) => console.error(`[ERROR] ${message}`, error),
-};
-
-// Configure AWS SDK
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-// Upload file to S3
-const uploadFileToS3 = async (file, path) => {
-  console.log("Uploading file to S3");
-  return new Promise((resolve, reject) => {
-    const fileContent = file.data;
-    if (!fileContent) {
-      console.log("No file content found");
-      return reject(new Error("No file content found"));
-    }
-
-    const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileName,
-      Body: fileContent,
-      ContentType: file.mimetype,
-    };
-
-    console.log("S3 upload params prepared");
-
-    s3.upload(params, (err, data) => {
-      if (err) {
-        console.log("S3 upload error:", err);
-        return reject(err);
-      }
-      console.log("File uploaded successfully:", fileName);
-      resolve({
-        url: data.Location,
-        key: data.Key,
-      });
-    });
-  });
-};
-
-// Delete file from S3
-const deleteFileFromS3 = async (key) => {
-  console.log("Deleting file from S3:", key);
-  return new Promise((resolve, reject) => {
-    if (!key) {
-      console.log("No file key provided");
-      return resolve({ message: "No file key provided" });
-    }
-
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: key,
-    };
-
-    s3.deleteObject(params, (err, data) => {
-      if (err) {
-        console.log("S3 delete error:", err);
-        return reject(err);
-      }
-      console.log("File deleted successfully from S3");
-      resolve(data);
-    });
-  });
 };
 
 // Create a new lecture for a specific module
@@ -131,14 +67,14 @@ const createLectureForModule = async function (req, res) {
       return res.status(400).json({ error: "Video file is required" });
     }
 
-    // Upload video to S3
+    // Upload video to Azure
     const videoFile = req.files.video;
     if (!videoFile.mimetype.startsWith("video/")) {
       return res.status(400).json({ error: "Uploaded file must be a video" });
     }
 
     const uploadPath = `courses/${course._id}/modules/${moduleId}/lectures`;
-    const uploadResult = await uploadFileToS3(videoFile, uploadPath);
+    const uploadResult = await uploadFileToAzure(videoFile, uploadPath);
 
     // Get the next lecture order for this module
     const existingLectures = await Lecture.find({
@@ -424,18 +360,18 @@ const updateLecture = async function (req, res) {
         return res.status(400).json({ error: "Uploaded file must be a video" });
       }
 
-      // Delete old video from S3 if it exists
+      // Delete old video from Azure if it exists
       if (lecture.videoKey) {
         try {
-          await deleteFileFromS3(lecture.videoKey);
+          await deleteFileFromAzure(lecture.videoKey);
         } catch (deleteError) {
           logger.error("Error deleting old video file:", deleteError);
         }
       }
 
-      // Upload new video to S3
+      // Upload new video to Azure
       const uploadPath = `courses/${courseId}/modules/${moduleId}/lectures`;
-      const uploadResult = await uploadFileToS3(videoFile, uploadPath);
+      const uploadResult = await uploadFileToAzure(videoFile, uploadPath);
 
       lecture.videoUrl = uploadResult.url;
       lecture.videoKey = uploadResult.key;
@@ -516,11 +452,11 @@ const deleteLecture = async function (req, res) {
       return res.status(404).json({ error: "Lecture not found" });
     }
 
-    // Delete video from S3 if it exists
+    // Delete video from Azure if it exists
     if (lecture.videoKey) {
       try {
-        await deleteFileFromS3(lecture.videoKey);
-        logger.info(`Deleted video from S3: ${lecture.videoKey}`);
+        await deleteFileFromAzure(lecture.videoKey);
+        logger.info(`Deleted video from Azure: ${lecture.videoKey}`);
       } catch (deleteError) {
         logger.error("Error deleting video file:", deleteError);
       }

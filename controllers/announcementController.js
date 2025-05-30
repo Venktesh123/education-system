@@ -4,49 +4,10 @@ const Course = require("../models/Course");
 const Teacher = require("../models/Teacher");
 const { ErrorHandler } = require("../middleware/errorHandler");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
-const AWS = require("aws-sdk");
-
-// Configure AWS S3
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-// Upload image to S3
-const uploadImageToS3 = async (file, path) => {
-  console.log("Uploading image to S3");
-  return new Promise((resolve, reject) => {
-    // Make sure we have the file data in the right format for S3
-    const fileContent = file.data;
-    if (!fileContent) {
-      console.log("No file content found");
-      return reject(new Error("No file content found"));
-    }
-    // Generate a unique filename
-    const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-    // Set up the S3 upload parameters without ACL
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileName,
-      Body: fileContent,
-      ContentType: file.mimetype,
-    };
-    console.log("S3 upload params prepared");
-    // Upload to S3
-    s3.upload(params, (err, data) => {
-      if (err) {
-        console.log("S3 upload error:", err);
-        return reject(err);
-      }
-      console.log("Image uploaded successfully:", fileName);
-      resolve({
-        url: data.Location,
-        key: data.Key,
-      });
-    });
-  });
-};
+const {
+  uploadFileToAzure,
+  deleteFileFromAzure,
+} = require("../utils/azureConfig");
 
 // Create new announcement
 exports.createAnnouncement = catchAsyncErrors(async (req, res, next) => {
@@ -134,8 +95,8 @@ exports.createAnnouncement = catchAsyncErrors(async (req, res, next) => {
           );
         }
 
-        // Upload image to S3
-        const uploadedImage = await uploadImageToS3(
+        // Upload image to Azure
+        const uploadedImage = await uploadFileToAzure(
           imageFile,
           "announcement-images"
         );
@@ -189,9 +150,6 @@ exports.createAnnouncement = catchAsyncErrors(async (req, res, next) => {
   }
 });
 
-// Get all announcements for a course
-// Get all announcements for a course
-// Get all announcements for a course
 // Get all announcements for a course
 exports.getCourseAnnouncements = catchAsyncErrors(async (req, res, next) => {
   console.log("getCourseAnnouncements: Started");
@@ -248,7 +206,7 @@ exports.getCourseAnnouncements = catchAsyncErrors(async (req, res, next) => {
     announcements: transformedAnnouncements,
   });
 });
-// Get specific announcement by ID
+
 // Get specific announcement by ID
 exports.getAnnouncementById = catchAsyncErrors(async (req, res, next) => {
   console.log("getAnnouncementById: Started");
@@ -366,24 +324,19 @@ exports.updateAnnouncement = catchAsyncErrors(async (req, res, next) => {
           );
         }
 
-        // Delete old image from S3 if it exists
+        // Delete old image from Azure if it exists
         if (announcement.image && announcement.image.imageKey) {
           try {
-            const deleteParams = {
-              Bucket: process.env.AWS_S3_BUCKET_NAME,
-              Key: announcement.image.imageKey,
-            };
-
-            await s3.deleteObject(deleteParams).promise();
-            console.log("Old image deleted from S3");
-          } catch (s3Error) {
-            console.error("Error deleting image from S3:", s3Error);
-            // Continue with the update even if S3 deletion fails
+            await deleteFileFromAzure(announcement.image.imageKey);
+            console.log("Old image deleted from Azure");
+          } catch (azureError) {
+            console.error("Error deleting image from Azure:", azureError);
+            // Continue with the update even if Azure deletion fails
           }
         }
 
-        // Upload new image to S3
-        const uploadedImage = await uploadImageToS3(
+        // Upload new image to Azure
+        const uploadedImage = await uploadFileToAzure(
           imageFile,
           "announcement-images"
         );
@@ -408,20 +361,15 @@ exports.updateAnnouncement = catchAsyncErrors(async (req, res, next) => {
       announcement.image.imageKey
     ) {
       try {
-        const deleteParams = {
-          Bucket: process.env.AWS_S3_BUCKET_NAME,
-          Key: announcement.image.imageKey,
-        };
-
-        await s3.deleteObject(deleteParams).promise();
-        console.log("Image deleted from S3");
+        await deleteFileFromAzure(announcement.image.imageKey);
+        console.log("Image deleted from Azure");
 
         // Clear image fields
         announcement.image.imageUrl = "";
         announcement.image.imageKey = "";
-      } catch (s3Error) {
-        console.error("Error deleting image from S3:", s3Error);
-        // Continue with the update even if S3 deletion fails
+      } catch (azureError) {
+        console.error("Error deleting image from Azure:", azureError);
+        // Continue with the update even if Azure deletion fails
       }
     }
 
@@ -504,19 +452,14 @@ exports.deleteAnnouncement = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("Unauthorized", 403));
     }
 
-    // Delete image from S3 if it exists
+    // Delete image from Azure if it exists
     if (announcement.image && announcement.image.imageKey) {
       try {
-        const deleteParams = {
-          Bucket: process.env.AWS_S3_BUCKET_NAME,
-          Key: announcement.image.imageKey,
-        };
-
-        await s3.deleteObject(deleteParams).promise();
-        console.log("Image deleted from S3");
-      } catch (s3Error) {
-        console.error("Error deleting image from S3:", s3Error);
-        // Continue with deletion even if S3 deletion fails
+        await deleteFileFromAzure(announcement.image.imageKey);
+        console.log("Image deleted from Azure");
+      } catch (azureError) {
+        console.error("Error deleting image from Azure:", azureError);
+        // Continue with deletion even if Azure deletion fails
       }
     }
 

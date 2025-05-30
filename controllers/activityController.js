@@ -5,53 +5,10 @@ const Student = require("../models/Student");
 const mongoose = require("mongoose");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
 const { ErrorHandler } = require("../middleware/errorHandler");
-const AWS = require("aws-sdk");
-
-// Configure AWS S3
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-// Upload file to S3
-const uploadFileToS3 = async (file, path) => {
-  console.log("Uploading file to S3");
-  return new Promise((resolve, reject) => {
-    // Make sure we have the file data in the right format for S3
-    const fileContent = file.data;
-    if (!fileContent) {
-      console.log("No file content found");
-      return reject(new Error("No file content found"));
-    }
-
-    // Generate a unique filename
-    const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-
-    // Set up the S3 upload parameters without ACL
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileName,
-      Body: fileContent,
-      ContentType: file.mimetype,
-    };
-
-    console.log("S3 upload params prepared");
-
-    // Upload to S3
-    s3.upload(params, (err, data) => {
-      if (err) {
-        console.log("S3 upload error:", err);
-        return reject(err);
-      }
-      console.log("File uploaded successfully:", fileName);
-      resolve({
-        url: data.Location,
-        key: data.Key,
-      });
-    });
-  });
-};
+const {
+  uploadFileToAzure,
+  deleteFileFromAzure,
+} = require("../utils/azureConfig");
 
 // Create new activity
 exports.createActivity = catchAsyncErrors(async (req, res, next) => {
@@ -70,7 +27,7 @@ exports.createActivity = catchAsyncErrors(async (req, res, next) => {
     console.log(`Creating activity for course: ${courseId}`);
 
     // Validate inputs
-    if (!title || !description || !dueDate || !totalPoints ) {
+    if (!title || !description || !dueDate || !totalPoints) {
       console.log("Missing required fields");
       return next(new ErrorHandler("All fields are required", 400));
     }
@@ -91,7 +48,7 @@ exports.createActivity = catchAsyncErrors(async (req, res, next) => {
       dueDate,
       totalPoints,
       isActive: true, // Default value
-      links: links || [], 
+      links: links || [],
     });
 
     // Handle file uploads if any
@@ -140,13 +97,12 @@ exports.createActivity = catchAsyncErrors(async (req, res, next) => {
         }
       }
 
-      // Upload attachments to S3
+      // Upload attachments to Azure
       try {
-        console.log("Starting file uploads to S3");
+        console.log("Starting file uploads to Azure");
 
         const uploadPromises = attachmentsArray.map((file) =>
-          // Pass the whole file object to uploadFileToS3
-          uploadFileToS3(file, "activity-attachments")
+          uploadFileToAzure(file, "activity-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -303,13 +259,13 @@ exports.submitActivity = catchAsyncErrors(async (req, res, next) => {
     console.log("Is submission late:", isDueDatePassed);
 
     try {
-      // Upload submission to S3
-      console.log("Attempting S3 upload");
-      const uploadedFile = await uploadFileToS3(
+      // Upload submission to Azure
+      console.log("Attempting Azure upload");
+      const uploadedFile = await uploadFileToAzure(
         submissionFile,
         `activity-submissions/${activity._id}`
       );
-      console.log("S3 upload successful:", uploadedFile.url);
+      console.log("Azure upload successful:", uploadedFile.url);
 
       // Check if already submitted
       const existingSubmission = activity.submissions.find((sub) =>
@@ -409,9 +365,7 @@ exports.gradeSubmission = catchAsyncErrors(async (req, res, next) => {
 
     if (!course) {
       console.log("Teacher not authorized for this course");
-      return next(
-        new ErrorHandler("Unauthorized to grade this activity", 403)
-      );
+      return next(new ErrorHandler("Unauthorized to grade this activity", 403));
     }
     console.log("Teacher authorized for course:", course._id);
 
@@ -617,6 +571,7 @@ exports.getActivityById = catchAsyncErrors(async (req, res, next) => {
     return next(new ErrorHandler(error.message, 500));
   }
 });
+
 exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
   console.log("updateActivity: Started");
   const session = await mongoose.startSession();
@@ -661,7 +616,8 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
     console.log("Teacher authorized for course:", course._id);
 
     // Extract update fields
-    const { title, description, dueDate, totalPoints, isActive, links } = req.body;
+    const { title, description, dueDate, totalPoints, isActive, links } =
+      req.body;
 
     // Update activity fields if provided
     if (title) activity.title = title;
@@ -669,7 +625,7 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
     if (dueDate) activity.dueDate = dueDate;
     if (totalPoints) activity.totalPoints = totalPoints;
     if (isActive !== undefined) activity.isActive = isActive;
-    if (links?.length !== 0 ) activity.links = links;
+    if (links?.length !== 0) activity.links = links;
 
     // Handle file uploads if any
     if (req.files && req.files.attachments) {
@@ -717,12 +673,12 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
         }
       }
 
-      // Upload new attachments to S3
+      // Upload new attachments to Azure
       try {
-        console.log("Starting file uploads to S3");
+        console.log("Starting file uploads to Azure");
 
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToS3(file, "activity-attachments")
+          uploadFileToAzure(file, "activity-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -745,10 +701,7 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
             url: file.url,
           }));
 
-          activity.attachments = [
-            ...activity.attachments,
-            ...newAttachments,
-          ];
+          activity.attachments = [...activity.attachments, ...newAttachments];
           console.log("Added new attachments to existing ones");
         }
       } catch (uploadError) {
@@ -859,7 +812,7 @@ exports.deleteActivity = catchAsyncErrors(async (req, res, next) => {
     await course.save({ session });
     console.log("Course updated");
 
-    // Delete S3 files if needed (optional in this implementation)
+    // Delete Azure files if needed (optional in this implementation)
     // This would require listing and deleting objects with the prefix:
     // `activity-attachments/${activity._id}`
     // and `activity-submissions/${activity._id}`

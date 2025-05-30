@@ -5,53 +5,10 @@ const Student = require("../models/Student");
 const mongoose = require("mongoose");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
 const { ErrorHandler } = require("../middleware/errorHandler");
-const AWS = require("aws-sdk");
-
-// Configure AWS S3
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-// Upload file to S3
-const uploadFileToS3 = async (file, path) => {
-  console.log("Uploading file to S3");
-  return new Promise((resolve, reject) => {
-    // Make sure we have the file data in the right format for S3
-    const fileContent = file.data;
-    if (!fileContent) {
-      console.log("No file content found");
-      return reject(new Error("No file content found"));
-    }
-
-    // Generate a unique filename
-    const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-
-    // Set up the S3 upload parameters without ACL
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileName,
-      Body: fileContent,
-      ContentType: file.mimetype,
-    };
-
-    console.log("S3 upload params prepared");
-
-    // Upload to S3
-    s3.upload(params, (err, data) => {
-      if (err) {
-        console.log("S3 upload error:", err);
-        return reject(err);
-      }
-      console.log("File uploaded successfully:", fileName);
-      resolve({
-        url: data.Location,
-        key: data.Key,
-      });
-    });
-  });
-};
+const {
+  uploadFileToAzure,
+  deleteFileFromAzure,
+} = require("../utils/azureConfig");
 
 // Create new assignment
 exports.createAssignment = catchAsyncErrors(async (req, res, next) => {
@@ -139,13 +96,12 @@ exports.createAssignment = catchAsyncErrors(async (req, res, next) => {
         }
       }
 
-      // Upload attachments to S3
+      // Upload attachments to Azure
       try {
-        console.log("Starting file uploads to S3");
+        console.log("Starting file uploads to Azure");
 
         const uploadPromises = attachmentsArray.map((file) =>
-          // Pass the whole file object to uploadFileToS3
-          uploadFileToS3(file, "assignment-attachments")
+          uploadFileToAzure(file, "assignment-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -302,13 +258,13 @@ exports.submitAssignment = catchAsyncErrors(async (req, res, next) => {
     console.log("Is submission late:", isDueDatePassed);
 
     try {
-      // Upload submission to S3
-      console.log("Attempting S3 upload");
-      const uploadedFile = await uploadFileToS3(
+      // Upload submission to Azure
+      console.log("Attempting Azure upload");
+      const uploadedFile = await uploadFileToAzure(
         submissionFile,
         `assignment-submissions/${assignment._id}`
       );
-      console.log("S3 upload successful:", uploadedFile.url);
+      console.log("Azure upload successful:", uploadedFile.url);
 
       // Check if already submitted
       const existingSubmission = assignment.submissions.find((sub) =>
@@ -616,6 +572,7 @@ exports.getAssignmentById = catchAsyncErrors(async (req, res, next) => {
     return next(new ErrorHandler(error.message, 500));
   }
 });
+
 exports.updateAssignment = catchAsyncErrors(async (req, res, next) => {
   console.log("updateAssignment: Started");
   const session = await mongoose.startSession();
@@ -715,12 +672,12 @@ exports.updateAssignment = catchAsyncErrors(async (req, res, next) => {
         }
       }
 
-      // Upload new attachments to S3
+      // Upload new attachments to Azure
       try {
-        console.log("Starting file uploads to S3");
+        console.log("Starting file uploads to Azure");
 
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToS3(file, "assignment-attachments")
+          uploadFileToAzure(file, "assignment-attachments")
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -857,7 +814,7 @@ exports.deleteAssignment = catchAsyncErrors(async (req, res, next) => {
     await course.save({ session });
     console.log("Course updated");
 
-    // Delete S3 files if needed (optional in this implementation)
+    // Delete Azure files if needed (optional in this implementation)
     // This would require listing and deleting objects with the prefix:
     // `assignment-attachments/${assignment._id}`
     // and `assignment-submissions/${assignment._id}`
