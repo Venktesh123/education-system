@@ -67,14 +67,26 @@ const createLectureForModule = async function (req, res) {
       return res.status(400).json({ error: "Video file is required" });
     }
 
-    // Upload video to Azure
     const videoFile = req.files.video;
     if (!videoFile.mimetype.startsWith("video/")) {
       return res.status(400).json({ error: "Uploaded file must be a video" });
     }
 
-    const uploadPath = `courses/${course._id}/modules/${moduleId}/lectures`;
-    const uploadResult = await uploadFileToAzure(videoFile, uploadPath);
+    // Upload video to Azure
+    logger.info("Uploading video to Azure Blob Storage");
+    const uploadPath = `lectures/course-${courseId}/module-${moduleId}`;
+
+    let uploadResult;
+    try {
+      uploadResult = await uploadFileToAzure(videoFile, uploadPath);
+      logger.info(`Video uploaded successfully: ${uploadResult.key}`);
+    } catch (uploadError) {
+      logger.error("Video upload failed:", uploadError);
+      return res.status(500).json({
+        error: "Failed to upload video",
+        details: uploadError.message,
+      });
+    }
 
     // Get the next lecture order for this module
     const existingLectures = await Lecture.find({
@@ -91,8 +103,8 @@ const createLectureForModule = async function (req, res) {
     const lectureData = {
       title: req.body.title,
       content: req.body.content,
-      videoUrl: uploadResult.url,
-      videoKey: uploadResult.key,
+      videoUrl: uploadResult.url, // Azure SAS URL
+      videoKey: uploadResult.key, // Azure blob key for deletion
       course: course._id,
       syllabusModule: moduleId,
       moduleNumber: module.moduleNumber,
@@ -115,13 +127,17 @@ const createLectureForModule = async function (req, res) {
     transactionStarted = false;
 
     logger.info(`Created lecture ID: ${lecture._id} for module: ${moduleId}`);
-    res.status(201).json(lecture);
+    res.status(201).json({
+      success: true,
+      lecture,
+      message: "Lecture created successfully",
+    });
   } catch (error) {
     if (transactionStarted) {
       await session.abortTransaction();
     }
     logger.error("Error in createLectureForModule:", error);
-    res.status(400).json({ error: error.message });
+    res.status(500).json({ error: error.message });
   } finally {
     await session.endSession();
   }
@@ -364,17 +380,27 @@ const updateLecture = async function (req, res) {
       if (lecture.videoKey) {
         try {
           await deleteFileFromAzure(lecture.videoKey);
+          logger.info(`Deleted old video: ${lecture.videoKey}`);
         } catch (deleteError) {
           logger.error("Error deleting old video file:", deleteError);
         }
       }
 
       // Upload new video to Azure
-      const uploadPath = `courses/${courseId}/modules/${moduleId}/lectures`;
-      const uploadResult = await uploadFileToAzure(videoFile, uploadPath);
+      const uploadPath = `lectures/course-${courseId}/module-${moduleId}`;
 
-      lecture.videoUrl = uploadResult.url;
-      lecture.videoKey = uploadResult.key;
+      try {
+        const uploadResult = await uploadFileToAzure(videoFile, uploadPath);
+        lecture.videoUrl = uploadResult.url;
+        lecture.videoKey = uploadResult.key;
+        logger.info(`New video uploaded: ${uploadResult.key}`);
+      } catch (uploadError) {
+        logger.error("Error uploading new video:", uploadError);
+        return res.status(500).json({
+          error: "Failed to upload new video",
+          details: uploadError.message,
+        });
+      }
     }
 
     // Handle review status
@@ -402,13 +428,17 @@ const updateLecture = async function (req, res) {
     transactionStarted = false;
 
     logger.info(`Updated lecture ID: ${lecture._id}`);
-    res.json(lecture);
+    res.json({
+      success: true,
+      lecture,
+      message: "Lecture updated successfully",
+    });
   } catch (error) {
     if (transactionStarted) {
       await session.abortTransaction();
     }
     logger.error("Error in updateLecture:", error);
-    res.status(400).json({ error: error.message });
+    res.status(500).json({ error: error.message });
   } finally {
     await session.endSession();
   }
@@ -459,6 +489,7 @@ const deleteLecture = async function (req, res) {
         logger.info(`Deleted video from Azure: ${lecture.videoKey}`);
       } catch (deleteError) {
         logger.error("Error deleting video file:", deleteError);
+        // Continue with lecture deletion even if Azure deletion fails
       }
     }
 
@@ -483,7 +514,10 @@ const deleteLecture = async function (req, res) {
     transactionStarted = false;
 
     logger.info(`Deleted lecture ID: ${lecture._id}`);
-    res.json({ message: "Lecture deleted successfully" });
+    res.json({
+      success: true,
+      message: "Lecture deleted successfully",
+    });
   } catch (error) {
     if (transactionStarted) {
       await session.abortTransaction();
@@ -562,7 +596,10 @@ const getLectureById = async function (req, res) {
       await lecture.save();
     }
 
-    res.json(lecture);
+    res.json({
+      success: true,
+      lecture,
+    });
   } catch (error) {
     logger.error("Error in getLectureById:", error);
     res.status(500).json({ error: error.message });
@@ -614,13 +651,16 @@ const updateLectureOrder = async function (req, res) {
     await session.commitTransaction();
     transactionStarted = false;
 
-    res.json({ message: "Lecture order updated successfully" });
+    res.json({
+      success: true,
+      message: "Lecture order updated successfully",
+    });
   } catch (error) {
     if (transactionStarted) {
       await session.abortTransaction();
     }
     logger.error("Error in updateLectureOrder:", error);
-    res.status(400).json({ error: error.message });
+    res.status(500).json({ error: error.message });
   } finally {
     await session.endSession();
   }

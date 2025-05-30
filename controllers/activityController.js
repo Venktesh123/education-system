@@ -101,17 +101,19 @@ exports.createActivity = catchAsyncErrors(async (req, res, next) => {
       try {
         console.log("Starting file uploads to Azure");
 
+        const uploadPath = `activities/course-${courseId}`;
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToAzure(file, "activity-attachments")
+          uploadFileToAzure(file, uploadPath)
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
         console.log(`Successfully uploaded ${uploadedFiles.length} files`);
 
         // Add attachments to activity
-        activity.attachments = uploadedFiles.map((file) => ({
-          name: file.key.split("/").pop(), // Extract filename from key
-          url: file.url,
+        activity.attachments = uploadedFiles.map((uploadResult) => ({
+          name: uploadResult.originalName,
+          url: uploadResult.url,
+          key: uploadResult.key,
         }));
 
         console.log("Attachments added to activity");
@@ -261,11 +263,9 @@ exports.submitActivity = catchAsyncErrors(async (req, res, next) => {
     try {
       // Upload submission to Azure
       console.log("Attempting Azure upload");
-      const uploadedFile = await uploadFileToAzure(
-        submissionFile,
-        `activity-submissions/${activity._id}`
-      );
-      console.log("Azure upload successful:", uploadedFile.url);
+      const uploadPath = `activity-submissions/activity-${activity._id}/student-${student._id}`;
+      const uploadResult = await uploadFileToAzure(submissionFile, uploadPath);
+      console.log("Azure upload successful:", uploadResult.url);
 
       // Check if already submitted
       const existingSubmission = activity.submissions.find((sub) =>
@@ -274,8 +274,18 @@ exports.submitActivity = catchAsyncErrors(async (req, res, next) => {
 
       if (existingSubmission) {
         console.log("Updating existing submission");
+        // Delete old file if it exists
+        if (existingSubmission.submissionFileKey) {
+          try {
+            await deleteFileFromAzure(existingSubmission.submissionFileKey);
+          } catch (deleteError) {
+            console.error("Error deleting old submission file:", deleteError);
+          }
+        }
+
         // Update existing submission
-        existingSubmission.submissionFile = uploadedFile.url;
+        existingSubmission.submissionFile = uploadResult.url;
+        existingSubmission.submissionFileKey = uploadResult.key;
         existingSubmission.submissionDate = now;
         existingSubmission.status = "submitted";
         existingSubmission.isLate = isDueDatePassed;
@@ -284,7 +294,8 @@ exports.submitActivity = catchAsyncErrors(async (req, res, next) => {
         // Create new submission
         activity.submissions.push({
           student: student._id,
-          submissionFile: uploadedFile.url,
+          submissionFile: uploadResult.url,
+          submissionFileKey: uploadResult.key,
           submissionDate: now,
           status: "submitted",
           isLate: isDueDatePassed,
@@ -677,8 +688,9 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
       try {
         console.log("Starting file uploads to Azure");
 
+        const uploadPath = `activities/course-${activity.course}`;
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToAzure(file, "activity-attachments")
+          uploadFileToAzure(file, uploadPath)
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -688,17 +700,29 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
         const { replaceAttachments } = req.body;
 
         if (replaceAttachments === "true") {
+          // Delete old attachments from Azure
+          if (activity.attachments && activity.attachments.length > 0) {
+            const deletePromises = activity.attachments.map((attachment) =>
+              deleteFileFromAzure(attachment.key).catch((err) =>
+                console.error("Error deleting old attachment:", err)
+              )
+            );
+            await Promise.all(deletePromises);
+          }
+
           // Replace all existing attachments
-          activity.attachments = uploadedFiles.map((file) => ({
-            name: file.key.split("/").pop(), // Extract filename from key
-            url: file.url,
+          activity.attachments = uploadedFiles.map((uploadResult) => ({
+            name: uploadResult.originalName,
+            url: uploadResult.url,
+            key: uploadResult.key,
           }));
           console.log("Replaced all attachments");
         } else {
           // Append new attachments to existing ones
-          const newAttachments = uploadedFiles.map((file) => ({
-            name: file.key.split("/").pop(),
-            url: file.url,
+          const newAttachments = uploadedFiles.map((uploadResult) => ({
+            name: uploadResult.originalName,
+            url: uploadResult.url,
+            key: uploadResult.key,
           }));
 
           activity.attachments = [...activity.attachments, ...newAttachments];
@@ -717,6 +741,19 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
         : [req.body.removeAttachments];
 
       console.log(`Removing ${attachmentsToRemove.length} attachments`);
+
+      // Delete files from Azure
+      const deletePromises = activity.attachments
+        .filter((attachment) =>
+          attachmentsToRemove.includes(attachment._id.toString())
+        )
+        .map((attachment) =>
+          deleteFileFromAzure(attachment.key).catch((err) =>
+            console.error("Error deleting attachment:", err)
+          )
+        );
+
+      await Promise.all(deletePromises);
 
       activity.attachments = activity.attachments.filter(
         (attachment) => !attachmentsToRemove.includes(attachment._id.toString())
@@ -804,6 +841,34 @@ exports.deleteActivity = catchAsyncErrors(async (req, res, next) => {
     }
     console.log("Teacher authorized for course:", course._id);
 
+    // Delete attachment files from Azure
+    if (activity.attachments && activity.attachments.length > 0) {
+      console.log(
+        `Deleting ${activity.attachments.length} attachment files from Azure`
+      );
+      const deleteAttachmentPromises = activity.attachments.map((attachment) =>
+        deleteFileFromAzure(attachment.key).catch((err) =>
+          console.error("Error deleting attachment:", err)
+        )
+      );
+      await Promise.all(deleteAttachmentPromises);
+    }
+
+    // Delete submission files from Azure
+    if (activity.submissions && activity.submissions.length > 0) {
+      console.log(
+        `Deleting ${activity.submissions.length} submission files from Azure`
+      );
+      const deleteSubmissionPromises = activity.submissions
+        .filter((submission) => submission.submissionFileKey)
+        .map((submission) =>
+          deleteFileFromAzure(submission.submissionFileKey).catch((err) =>
+            console.error("Error deleting submission:", err)
+          )
+        );
+      await Promise.all(deleteSubmissionPromises);
+    }
+
     // Remove activity from course
     console.log("Removing activity from course");
     course.activities = course.activities.filter(
@@ -811,12 +876,6 @@ exports.deleteActivity = catchAsyncErrors(async (req, res, next) => {
     );
     await course.save({ session });
     console.log("Course updated");
-
-    // Delete Azure files if needed (optional in this implementation)
-    // This would require listing and deleting objects with the prefix:
-    // `activity-attachments/${activity._id}`
-    // and `activity-submissions/${activity._id}`
-    // For brevity, this is left as a comment
 
     // Delete the activity
     console.log("Deleting activity document");
