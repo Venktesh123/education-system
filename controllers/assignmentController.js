@@ -22,7 +22,7 @@ exports.createAssignment = catchAsyncErrors(async (req, res, next) => {
     console.log("Transaction started");
 
     const { title, description, dueDate, totalPoints } = req.body;
-    const { courseId } = req.params; // Extract courseId from URL
+    const { courseId } = req.params;
 
     console.log(`Creating assignment for course: ${courseId}`);
 
@@ -47,7 +47,7 @@ exports.createAssignment = catchAsyncErrors(async (req, res, next) => {
       course: courseId,
       dueDate,
       totalPoints,
-      isActive: true, // Default value
+      isActive: true,
     });
 
     // Handle file uploads if any
@@ -100,17 +100,19 @@ exports.createAssignment = catchAsyncErrors(async (req, res, next) => {
       try {
         console.log("Starting file uploads to Azure");
 
+        const uploadPath = `assignments/course-${courseId}`;
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToAzure(file, "assignment-attachments")
+          uploadFileToAzure(file, uploadPath)
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
         console.log(`Successfully uploaded ${uploadedFiles.length} files`);
 
         // Add attachments to assignment
-        assignment.attachments = uploadedFiles.map((file) => ({
-          name: file.key.split("/").pop(), // Extract filename from key
-          url: file.url,
+        assignment.attachments = uploadedFiles.map((uploadResult) => ({
+          name: uploadResult.originalName,
+          url: uploadResult.url,
+          key: uploadResult.key,
         }));
 
         console.log("Attachments added to assignment");
@@ -260,11 +262,9 @@ exports.submitAssignment = catchAsyncErrors(async (req, res, next) => {
     try {
       // Upload submission to Azure
       console.log("Attempting Azure upload");
-      const uploadedFile = await uploadFileToAzure(
-        submissionFile,
-        `assignment-submissions/${assignment._id}`
-      );
-      console.log("Azure upload successful:", uploadedFile.url);
+      const uploadPath = `assignment-submissions/assignment-${assignment._id}/student-${student._id}`;
+      const uploadResult = await uploadFileToAzure(submissionFile, uploadPath);
+      console.log("Azure upload successful:", uploadResult.url);
 
       // Check if already submitted
       const existingSubmission = assignment.submissions.find((sub) =>
@@ -273,8 +273,18 @@ exports.submitAssignment = catchAsyncErrors(async (req, res, next) => {
 
       if (existingSubmission) {
         console.log("Updating existing submission");
+        // Delete old file if it exists
+        if (existingSubmission.submissionFileKey) {
+          try {
+            await deleteFileFromAzure(existingSubmission.submissionFileKey);
+          } catch (deleteError) {
+            console.error("Error deleting old submission file:", deleteError);
+          }
+        }
+
         // Update existing submission
-        existingSubmission.submissionFile = uploadedFile.url;
+        existingSubmission.submissionFile = uploadResult.url;
+        existingSubmission.submissionFileKey = uploadResult.key;
         existingSubmission.submissionDate = now;
         existingSubmission.status = "submitted";
         existingSubmission.isLate = isDueDatePassed;
@@ -283,7 +293,8 @@ exports.submitAssignment = catchAsyncErrors(async (req, res, next) => {
         // Create new submission
         assignment.submissions.push({
           student: student._id,
-          submissionFile: uploadedFile.url,
+          submissionFile: uploadResult.url,
+          submissionFileKey: uploadResult.key,
           submissionDate: now,
           status: "submitted",
           isLate: isDueDatePassed,
@@ -548,19 +559,19 @@ exports.getAssignmentById = catchAsyncErrors(async (req, res, next) => {
       }
       console.log("Student authorized");
 
-      // Replace the student ID with req.user.id in each submission for this student
+      // Filter submissions to show only this student's submission
       assignment.submissions = assignment.submissions
         .filter((submission) => submission.student.equals(student._id))
         .map((submission) => {
           // Create a new object to avoid modifying the original
           const modifiedSubmission = {
-            ...submission.toObject(), // Convert to plain object if it's a Mongoose document
+            ...submission.toObject(),
             student: req.user.id, // Replace student field with req.user.id
           };
           return modifiedSubmission;
         });
 
-      console.log("Submissions modified for student");
+      console.log("Submissions filtered for student");
     }
 
     res.status(200).json({
@@ -573,6 +584,7 @@ exports.getAssignmentById = catchAsyncErrors(async (req, res, next) => {
   }
 });
 
+// Update assignment
 exports.updateAssignment = catchAsyncErrors(async (req, res, next) => {
   console.log("updateAssignment: Started");
   const session = await mongoose.startSession();
@@ -676,8 +688,9 @@ exports.updateAssignment = catchAsyncErrors(async (req, res, next) => {
       try {
         console.log("Starting file uploads to Azure");
 
+        const uploadPath = `assignments/course-${assignment.course}`;
         const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToAzure(file, "assignment-attachments")
+          uploadFileToAzure(file, uploadPath)
         );
 
         const uploadedFiles = await Promise.all(uploadPromises);
@@ -687,17 +700,29 @@ exports.updateAssignment = catchAsyncErrors(async (req, res, next) => {
         const { replaceAttachments } = req.body;
 
         if (replaceAttachments === "true") {
+          // Delete old attachments from Azure
+          if (assignment.attachments && assignment.attachments.length > 0) {
+            const deletePromises = assignment.attachments.map((attachment) =>
+              deleteFileFromAzure(attachment.key).catch((err) =>
+                console.error("Error deleting old attachment:", err)
+              )
+            );
+            await Promise.all(deletePromises);
+          }
+
           // Replace all existing attachments
-          assignment.attachments = uploadedFiles.map((file) => ({
-            name: file.key.split("/").pop(), // Extract filename from key
-            url: file.url,
+          assignment.attachments = uploadedFiles.map((uploadResult) => ({
+            name: uploadResult.originalName,
+            url: uploadResult.url,
+            key: uploadResult.key,
           }));
           console.log("Replaced all attachments");
         } else {
           // Append new attachments to existing ones
-          const newAttachments = uploadedFiles.map((file) => ({
-            name: file.key.split("/").pop(),
-            url: file.url,
+          const newAttachments = uploadedFiles.map((uploadResult) => ({
+            name: uploadResult.originalName,
+            url: uploadResult.url,
+            key: uploadResult.key,
           }));
 
           assignment.attachments = [
@@ -720,6 +745,20 @@ exports.updateAssignment = catchAsyncErrors(async (req, res, next) => {
 
       console.log(`Removing ${attachmentsToRemove.length} attachments`);
 
+      // Delete files from Azure
+      const deletePromises = assignment.attachments
+        .filter((attachment) =>
+          attachmentsToRemove.includes(attachment._id.toString())
+        )
+        .map((attachment) =>
+          deleteFileFromAzure(attachment.key).catch((err) =>
+            console.error("Error deleting attachment:", err)
+          )
+        );
+
+      await Promise.all(deletePromises);
+
+      // Remove from attachments array
       assignment.attachments = assignment.attachments.filter(
         (attachment) => !attachmentsToRemove.includes(attachment._id.toString())
       );
@@ -806,6 +845,35 @@ exports.deleteAssignment = catchAsyncErrors(async (req, res, next) => {
     }
     console.log("Teacher authorized for course:", course._id);
 
+    // Delete attachment files from Azure
+    if (assignment.attachments && assignment.attachments.length > 0) {
+      console.log(
+        `Deleting ${assignment.attachments.length} attachment files from Azure`
+      );
+      const deleteAttachmentPromises = assignment.attachments.map(
+        (attachment) =>
+          deleteFileFromAzure(attachment.key).catch((err) =>
+            console.error("Error deleting attachment:", err)
+          )
+      );
+      await Promise.all(deleteAttachmentPromises);
+    }
+
+    // Delete submission files from Azure
+    if (assignment.submissions && assignment.submissions.length > 0) {
+      console.log(
+        `Deleting ${assignment.submissions.length} submission files from Azure`
+      );
+      const deleteSubmissionPromises = assignment.submissions
+        .filter((submission) => submission.submissionFileKey)
+        .map((submission) =>
+          deleteFileFromAzure(submission.submissionFileKey).catch((err) =>
+            console.error("Error deleting submission:", err)
+          )
+        );
+      await Promise.all(deleteSubmissionPromises);
+    }
+
     // Remove assignment from course
     console.log("Removing assignment from course");
     course.assignments = course.assignments.filter(
@@ -813,12 +881,6 @@ exports.deleteAssignment = catchAsyncErrors(async (req, res, next) => {
     );
     await course.save({ session });
     console.log("Course updated");
-
-    // Delete Azure files if needed (optional in this implementation)
-    // This would require listing and deleting objects with the prefix:
-    // `assignment-attachments/${assignment._id}`
-    // and `assignment-submissions/${assignment._id}`
-    // For brevity, this is left as a comment
 
     // Delete the assignment
     console.log("Deleting assignment document");
