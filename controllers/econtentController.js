@@ -3,49 +3,10 @@ const EContent = require("../models/EContent");
 const Course = require("../models/Course");
 const { ErrorHandler } = require("../middleware/errorHandler");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
-const AWS = require("aws-sdk");
-
-// Configure AWS S3
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-// Upload file to S3
-const uploadFileToS3 = async (file, path) => {
-  console.log("Uploading file to S3");
-  return new Promise((resolve, reject) => {
-    // Make sure we have the file data in the right format for S3
-    const fileContent = file.data;
-    if (!fileContent) {
-      console.log("No file content found");
-      return reject(new Error("No file content found"));
-    }
-    // Generate a unique filename
-    const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-    // Set up the S3 upload parameters without ACL
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: fileName,
-      Body: fileContent,
-      ContentType: file.mimetype,
-    };
-    console.log("S3 upload params prepared");
-    // Upload to S3
-    s3.upload(params, (err, data) => {
-      if (err) {
-        console.log("S3 upload error:", err);
-        return reject(err);
-      }
-      console.log("File uploaded successfully:", fileName);
-      resolve({
-        url: data.Location,
-        key: data.Key,
-      });
-    });
-  });
-};
+const {
+  uploadFileToAzure,
+  deleteFileFromAzure,
+} = require("../utils/azureConfig");
 
 // Function to handle file uploads - extracted to avoid code duplication
 const handleFileUploads = async (files, allowedTypes, next) => {
@@ -78,10 +39,10 @@ const handleFileUploads = async (files, allowedTypes, next) => {
     }
   }
 
-  // Upload files to S3
-  console.log("Starting file uploads to S3");
+  // Upload files to Azure
+  console.log("Starting file uploads to Azure");
   const uploadPromises = filesArray.map((file) =>
-    uploadFileToS3(file, "econtent-files")
+    uploadFileToAzure(file, "econtent-files")
   );
 
   const uploadedFiles = await Promise.all(uploadPromises);
@@ -169,8 +130,6 @@ exports.createEContent = catchAsyncErrors(async (req, res, next) => {
       });
     } else {
       console.log("Found existing EContent document");
-
-      // We've removed the module number check to always create a new module
     }
 
     // Create new module object
@@ -250,6 +209,7 @@ exports.createEContent = catchAsyncErrors(async (req, res, next) => {
     console.log("Session ended");
   }
 });
+
 // Get EContent for a course
 exports.getEContentByCourse = catchAsyncErrors(async (req, res, next) => {
   console.log("getEContentByCourse: Started");
@@ -340,7 +300,6 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
     }
     // Update module details
     if (moduleNumber) {
-      // Removed the duplicate module number check
       module.moduleNumber = moduleNumber;
     }
     if (moduleTitle) module.moduleTitle = moduleTitle;
@@ -407,6 +366,7 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
     console.log("Session ended");
   }
 });
+
 // Delete module
 exports.deleteModule = catchAsyncErrors(async (req, res, next) => {
   console.log("deleteModule: Started");
@@ -438,24 +398,20 @@ exports.deleteModule = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("Module not found", 404));
     }
 
-    // Delete all module files from S3 if there are any
+    // Delete all module files from Azure if there are any
     if (module.files && module.files.length > 0) {
-      console.log(`Deleting ${module.files.length} files from S3`);
+      console.log(`Deleting ${module.files.length} files from Azure`);
 
       try {
-        const deletePromises = module.files.map((file) => {
-          const params = {
-            Bucket: process.env.AWS_S3_BUCKET_NAME,
-            Key: file.fileKey,
-          };
-          return s3.deleteObject(params).promise();
-        });
+        const deletePromises = module.files.map((file) =>
+          deleteFileFromAzure(file.fileKey)
+        );
 
         await Promise.all(deletePromises);
-        console.log("All files deleted from S3");
-      } catch (s3Error) {
-        console.error("Error deleting files from S3:", s3Error);
-        // Continue with the database deletion even if S3 deletion fails
+        console.log("All files deleted from Azure");
+      } catch (azureError) {
+        console.error("Error deleting files from Azure:", azureError);
+        // Continue with the database deletion even if Azure deletion fails
       }
     }
 
@@ -540,22 +496,17 @@ exports.deleteFile = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("File not found", 404));
     }
 
-    // Get file key for S3 deletion
+    // Get file key for Azure deletion
     const fileKey = module.files[fileIndex].fileKey;
 
-    // Delete from S3 if needed
+    // Delete from Azure if needed
     try {
-      console.log(`Deleting file from S3: ${fileKey}`);
-      const params = {
-        Bucket: process.env.AWS_S3_BUCKET_NAME,
-        Key: fileKey,
-      };
-
-      await s3.deleteObject(params).promise();
-      console.log("File deleted from S3");
-    } catch (s3Error) {
-      console.error("Error deleting file from S3:", s3Error);
-      // Continue with the database deletion even if S3 deletion fails
+      console.log(`Deleting file from Azure: ${fileKey}`);
+      await deleteFileFromAzure(fileKey);
+      console.log("File deleted from Azure");
+    } catch (azureError) {
+      console.error("Error deleting file from Azure:", azureError);
+      // Continue with the database deletion even if Azure deletion fails
     }
 
     // Remove file from module
