@@ -15,15 +15,51 @@ const logger = {
   error: (message, error) => console.error(`[ERROR] ${message}`, error),
 };
 
+// Helper function to check if error is transient and retryable
+const isTransientError = (error) => {
+  return (
+    error.code === 251 || // NoSuchTransaction
+    error.codeName === "NoSuchTransaction" ||
+    error.errorLabels?.includes("TransientTransactionError") ||
+    error.name === "MongoNetworkError"
+  );
+};
+
+// Helper function to perform database operations with retry logic
+const withRetry = async (operation, maxRetries = 3, baseDelay = 1000) => {
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+
+      if (isTransientError(error) && attempt < maxRetries) {
+        logger.info(
+          `Retrying operation (attempt ${
+            attempt + 1
+          }/${maxRetries}) due to transient error: ${error.message}`
+        );
+        // Exponential backoff
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+
+      // If not transient or max retries reached, throw the error
+      throw error;
+    }
+  }
+
+  throw lastError;
+};
+
 // Create a new lecture for a specific module
 const createLectureForModule = async function (req, res) {
-  const session = await mongoose.startSession();
-  let transactionStarted = false;
+  let uploadedVideoKey = null;
 
   try {
-    await session.startTransaction();
-    transactionStarted = true;
-
     logger.info(
       `Creating lecture for course ID: ${req.params.courseId}, module ID: ${req.params.moduleId}`
     );
@@ -36,7 +72,7 @@ const createLectureForModule = async function (req, res) {
 
     const { courseId, moduleId } = req.params;
 
-    // Verify course ownership
+    // Verify course ownership (outside transaction)
     const course = await Course.findOne({
       _id: courseId,
       teacher: teacher._id,
@@ -47,10 +83,8 @@ const createLectureForModule = async function (req, res) {
       return res.status(404).json({ error: "Course not found" });
     }
 
-    // Find the syllabus and module
-    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
-    );
+    // Find the syllabus and module (outside transaction)
+    const syllabus = await CourseSyllabus.findOne({ course: courseId });
     if (!syllabus) {
       logger.error(`Course syllabus not found for course: ${courseId}`);
       return res.status(404).json({ error: "Course syllabus not found" });
@@ -60,6 +94,11 @@ const createLectureForModule = async function (req, res) {
     if (!module) {
       logger.error(`Module not found with ID: ${moduleId}`);
       return res.status(404).json({ error: "Module not found" });
+    }
+
+    // Validate input
+    if (!req.body.title) {
+      return res.status(400).json({ error: "Lecture title is required" });
     }
 
     // Check if video file was uploaded
@@ -72,13 +111,24 @@ const createLectureForModule = async function (req, res) {
       return res.status(400).json({ error: "Uploaded file must be a video" });
     }
 
-    // Upload video to Azure
+    // Validate file size (e.g., 500MB limit)
+    const maxSize = 500 * 1024 * 1024; // 500MB
+    if (videoFile.size > maxSize) {
+      return res.status(400).json({
+        error: `Video file too large. Maximum size is ${
+          maxSize / (1024 * 1024)
+        }MB`,
+      });
+    }
+
+    // STEP 1: Upload video to Azure FIRST (outside transaction)
     logger.info("Uploading video to Azure Blob Storage");
     const uploadPath = `lectures/course-${courseId}/module-${moduleId}`;
 
     let uploadResult;
     try {
       uploadResult = await uploadFileToAzure(videoFile, uploadPath);
+      uploadedVideoKey = uploadResult.key; // Store for cleanup if needed
       logger.info(`Video uploaded successfully: ${uploadResult.key}`);
     } catch (uploadError) {
       logger.error("Video upload failed:", uploadError);
@@ -88,58 +138,104 @@ const createLectureForModule = async function (req, res) {
       });
     }
 
-    // Get the next lecture order for this module
-    const existingLectures = await Lecture.find({
-      course: courseId,
-      syllabusModule: moduleId,
-    })
-      .sort({ lectureOrder: -1 })
-      .limit(1);
+    // STEP 2: Database operations with retry logic
+    const result = await withRetry(async () => {
+      const session = await mongoose.startSession();
+      let transactionStarted = false;
 
-    const nextOrder =
-      existingLectures.length > 0 ? existingLectures[0].lectureOrder + 1 : 1;
+      try {
+        await session.startTransaction();
+        transactionStarted = true;
+        logger.info("Database transaction started");
 
-    // Create the lecture
-    const lectureData = {
-      title: req.body.title,
-      content: req.body.content,
-      videoUrl: uploadResult.url, // Azure SAS URL
-      videoKey: uploadResult.key, // Azure blob key for deletion
-      course: course._id,
-      syllabusModule: moduleId,
-      moduleNumber: module.moduleNumber,
-      lectureOrder: nextOrder,
-      isReviewed: req.body.isReviewed || false,
-    };
+        // Get the next lecture order for this module
+        const existingLectures = await Lecture.find({
+          course: courseId,
+          syllabusModule: moduleId,
+        })
+          .sort({ lectureOrder: -1 })
+          .limit(1)
+          .session(session);
 
-    if (req.body.reviewDeadline) {
-      lectureData.reviewDeadline = new Date(req.body.reviewDeadline);
-    }
+        const nextOrder =
+          existingLectures.length > 0
+            ? existingLectures[0].lectureOrder + 1
+            : 1;
 
-    const lecture = new Lecture(lectureData);
-    await lecture.save({ session });
+        // Create the lecture
+        const lectureData = {
+          title: req.body.title,
+          content: req.body.content || "",
+          videoUrl: uploadResult.url,
+          videoKey: uploadResult.key,
+          course: course._id,
+          syllabusModule: moduleId,
+          moduleNumber: module.moduleNumber,
+          lectureOrder: nextOrder,
+          isReviewed: req.body.isReviewed || false,
+        };
 
-    // Add lecture to module's lectures array
-    module.lectures.push(lecture._id);
-    await syllabus.save({ session });
+        if (req.body.reviewDeadline) {
+          lectureData.reviewDeadline = new Date(req.body.reviewDeadline);
+        }
 
-    await session.commitTransaction();
-    transactionStarted = false;
+        const lecture = new Lecture(lectureData);
+        await lecture.save({ session });
 
-    logger.info(`Created lecture ID: ${lecture._id} for module: ${moduleId}`);
+        // Add lecture to module's lectures array
+        module.lectures.push(lecture._id);
+
+        // Re-fetch syllabus within session to avoid conflicts
+        const syllabusInSession = await CourseSyllabus.findOne({
+          course: courseId,
+        }).session(session);
+        const moduleInSession = syllabusInSession.modules.id(moduleId);
+        moduleInSession.lectures.push(lecture._id);
+        await syllabusInSession.save({ session });
+
+        await session.commitTransaction();
+        transactionStarted = false;
+        logger.info("Database transaction committed successfully");
+
+        return lecture;
+      } catch (dbError) {
+        if (transactionStarted) {
+          try {
+            await session.abortTransaction();
+            logger.info("Database transaction aborted");
+          } catch (abortError) {
+            logger.error("Error aborting transaction:", abortError);
+          }
+        }
+        throw dbError;
+      } finally {
+        await session.endSession();
+        logger.info("Database session ended");
+      }
+    });
+
+    logger.info(`Created lecture ID: ${result._id} for module: ${moduleId}`);
     res.status(201).json({
       success: true,
-      lecture,
+      lecture: result,
       message: "Lecture created successfully",
     });
   } catch (error) {
-    if (transactionStarted) {
-      await session.abortTransaction();
-    }
     logger.error("Error in createLectureForModule:", error);
+
+    // Clean up uploaded video if database operation failed
+    if (uploadedVideoKey) {
+      try {
+        await deleteFileFromAzure(uploadedVideoKey);
+        logger.info(
+          `Cleaned up uploaded video after error: ${uploadedVideoKey}`
+        );
+      } catch (cleanupError) {
+        logger.error("Error cleaning up uploaded video:", cleanupError);
+      }
+    }
+
     res.status(500).json({ error: error.message });
-  } finally {
-    await session.endSession();
   }
 };
 
@@ -318,13 +414,10 @@ const getCourseModulesWithLectures = async function (req, res) {
 
 // Update a lecture
 const updateLecture = async function (req, res) {
-  const session = await mongoose.startSession();
-  let transactionStarted = false;
+  let newVideoKey = null;
+  let oldVideoKey = null;
 
   try {
-    await session.startTransaction();
-    transactionStarted = true;
-
     const { courseId, moduleId, lectureId } = req.params;
     logger.info(`Updating lecture ID: ${lectureId}`);
 
@@ -363,11 +456,6 @@ const updateLecture = async function (req, res) {
         .json({ error: "You don't have permission to update this lecture" });
     }
 
-    // Update lecture fields
-    if (req.body.title) lecture.title = req.body.title;
-    if (req.body.content) lecture.content = req.body.content;
-    if (req.body.lectureOrder) lecture.lectureOrder = req.body.lectureOrder;
-
     // Handle video file update if provided
     if (req.files && req.files.video) {
       const videoFile = req.files.video;
@@ -376,23 +464,28 @@ const updateLecture = async function (req, res) {
         return res.status(400).json({ error: "Uploaded file must be a video" });
       }
 
-      // Delete old video from Azure if it exists
-      if (lecture.videoKey) {
-        try {
-          await deleteFileFromAzure(lecture.videoKey);
-          logger.info(`Deleted old video: ${lecture.videoKey}`);
-        } catch (deleteError) {
-          logger.error("Error deleting old video file:", deleteError);
-        }
+      // Validate file size
+      const maxSize = 500 * 1024 * 1024; // 500MB
+      if (videoFile.size > maxSize) {
+        return res.status(400).json({
+          error: `Video file too large. Maximum size is ${
+            maxSize / (1024 * 1024)
+          }MB`,
+        });
       }
 
-      // Upload new video to Azure
+      // Upload new video to Azure first
       const uploadPath = `lectures/course-${courseId}/module-${moduleId}`;
 
       try {
         const uploadResult = await uploadFileToAzure(videoFile, uploadPath);
+        newVideoKey = uploadResult.key;
+        oldVideoKey = lecture.videoKey; // Store old key for cleanup
+
+        // Update lecture with new video info
         lecture.videoUrl = uploadResult.url;
         lecture.videoKey = uploadResult.key;
+
         logger.info(`New video uploaded: ${uploadResult.key}`);
       } catch (uploadError) {
         logger.error("Error uploading new video:", uploadError);
@@ -402,6 +495,11 @@ const updateLecture = async function (req, res) {
         });
       }
     }
+
+    // Update other lecture fields
+    if (req.body.title) lecture.title = req.body.title;
+    if (req.body.content !== undefined) lecture.content = req.body.content;
+    if (req.body.lectureOrder) lecture.lectureOrder = req.body.lectureOrder;
 
     // Handle review status
     if (req.body.isReviewed !== undefined) {
@@ -422,10 +520,39 @@ const updateLecture = async function (req, res) {
       lecture.isReviewed = true;
     }
 
-    await lecture.save({ session });
+    // Save with retry logic
+    await withRetry(async () => {
+      const session = await mongoose.startSession();
+      let transactionStarted = false;
 
-    await session.commitTransaction();
-    transactionStarted = false;
+      try {
+        await session.startTransaction();
+        transactionStarted = true;
+
+        await lecture.save({ session });
+
+        await session.commitTransaction();
+        transactionStarted = false;
+      } catch (dbError) {
+        if (transactionStarted) {
+          await session.abortTransaction();
+        }
+        throw dbError;
+      } finally {
+        await session.endSession();
+      }
+    });
+
+    // Delete old video from Azure if new video was uploaded
+    if (oldVideoKey && newVideoKey) {
+      try {
+        await deleteFileFromAzure(oldVideoKey);
+        logger.info(`Deleted old video: ${oldVideoKey}`);
+      } catch (deleteError) {
+        logger.error("Error deleting old video file:", deleteError);
+        // Don't fail the operation if cleanup fails
+      }
+    }
 
     logger.info(`Updated lecture ID: ${lecture._id}`);
     res.json({
@@ -434,25 +561,25 @@ const updateLecture = async function (req, res) {
       message: "Lecture updated successfully",
     });
   } catch (error) {
-    if (transactionStarted) {
-      await session.abortTransaction();
-    }
     logger.error("Error in updateLecture:", error);
+
+    // Clean up new video if database operation failed
+    if (newVideoKey) {
+      try {
+        await deleteFileFromAzure(newVideoKey);
+        logger.info(`Cleaned up new video after error: ${newVideoKey}`);
+      } catch (cleanupError) {
+        logger.error("Error cleaning up new video:", cleanupError);
+      }
+    }
+
     res.status(500).json({ error: error.message });
-  } finally {
-    await session.endSession();
   }
 };
 
 // Delete a lecture
 const deleteLecture = async function (req, res) {
-  const session = await mongoose.startSession();
-  let transactionStarted = false;
-
   try {
-    await session.startTransaction();
-    transactionStarted = true;
-
     const { courseId, moduleId, lectureId } = req.params;
     logger.info(`Deleting lecture ID: ${lectureId}`);
 
@@ -482,36 +609,56 @@ const deleteLecture = async function (req, res) {
       return res.status(404).json({ error: "Lecture not found" });
     }
 
-    // Delete video from Azure if it exists
-    if (lecture.videoKey) {
+    const videoKey = lecture.videoKey;
+
+    // Delete from database with retry logic
+    await withRetry(async () => {
+      const session = await mongoose.startSession();
+      let transactionStarted = false;
+
       try {
-        await deleteFileFromAzure(lecture.videoKey);
-        logger.info(`Deleted video from Azure: ${lecture.videoKey}`);
+        await session.startTransaction();
+        transactionStarted = true;
+
+        // Remove lecture from syllabus module
+        const syllabus = await CourseSyllabus.findOne({
+          course: courseId,
+        }).session(session);
+        if (syllabus) {
+          const module = syllabus.modules.id(moduleId);
+          if (module) {
+            module.lectures = module.lectures.filter(
+              (id) => id.toString() !== lecture._id.toString()
+            );
+            await syllabus.save({ session });
+          }
+        }
+
+        // Delete the lecture
+        await Lecture.findByIdAndDelete(lecture._id).session(session);
+
+        await session.commitTransaction();
+        transactionStarted = false;
+      } catch (dbError) {
+        if (transactionStarted) {
+          await session.abortTransaction();
+        }
+        throw dbError;
+      } finally {
+        await session.endSession();
+      }
+    });
+
+    // Delete video from Azure after successful database deletion
+    if (videoKey) {
+      try {
+        await deleteFileFromAzure(videoKey);
+        logger.info(`Deleted video from Azure: ${videoKey}`);
       } catch (deleteError) {
         logger.error("Error deleting video file:", deleteError);
-        // Continue with lecture deletion even if Azure deletion fails
+        // Don't fail the operation if Azure cleanup fails
       }
     }
-
-    // Remove lecture from syllabus module
-    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
-    );
-    if (syllabus) {
-      const module = syllabus.modules.id(moduleId);
-      if (module) {
-        module.lectures = module.lectures.filter(
-          (id) => id.toString() !== lecture._id.toString()
-        );
-        await syllabus.save({ session });
-      }
-    }
-
-    // Delete the lecture
-    await Lecture.findByIdAndDelete(lecture._id).session(session);
-
-    await session.commitTransaction();
-    transactionStarted = false;
 
     logger.info(`Deleted lecture ID: ${lecture._id}`);
     res.json({
@@ -519,13 +666,8 @@ const deleteLecture = async function (req, res) {
       message: "Lecture deleted successfully",
     });
   } catch (error) {
-    if (transactionStarted) {
-      await session.abortTransaction();
-    }
     logger.error("Error in deleteLecture:", error);
     res.status(500).json({ error: error.message });
-  } finally {
-    await session.endSession();
   }
 };
 
@@ -608,15 +750,13 @@ const getLectureById = async function (req, res) {
 
 // Update lecture order within a module
 const updateLectureOrder = async function (req, res) {
-  const session = await mongoose.startSession();
-  let transactionStarted = false;
-
   try {
-    await session.startTransaction();
-    transactionStarted = true;
-
     const { courseId, moduleId } = req.params;
     const { lectureOrders } = req.body; // Array of {lectureId, order}
+
+    if (!lectureOrders || !Array.isArray(lectureOrders)) {
+      return res.status(400).json({ error: "Invalid lecture orders data" });
+    }
 
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
@@ -633,36 +773,48 @@ const updateLectureOrder = async function (req, res) {
       return res.status(404).json({ error: "Course not found" });
     }
 
-    // Update lecture orders
-    const updatePromises = lectureOrders.map(({ lectureId, order }) =>
-      Lecture.findOneAndUpdate(
-        {
-          _id: lectureId,
-          course: courseId,
-          syllabusModule: moduleId,
-        },
-        { lectureOrder: order },
-        { session }
-      )
-    );
+    // Update lecture orders with retry logic
+    await withRetry(async () => {
+      const session = await mongoose.startSession();
+      let transactionStarted = false;
 
-    await Promise.all(updatePromises);
+      try {
+        await session.startTransaction();
+        transactionStarted = true;
 
-    await session.commitTransaction();
-    transactionStarted = false;
+        const updatePromises = lectureOrders.map(({ lectureId, order }) =>
+          Lecture.findOneAndUpdate(
+            {
+              _id: lectureId,
+              course: courseId,
+              syllabusModule: moduleId,
+            },
+            { lectureOrder: order },
+            { session, new: true }
+          )
+        );
+
+        await Promise.all(updatePromises);
+
+        await session.commitTransaction();
+        transactionStarted = false;
+      } catch (dbError) {
+        if (transactionStarted) {
+          await session.abortTransaction();
+        }
+        throw dbError;
+      } finally {
+        await session.endSession();
+      }
+    });
 
     res.json({
       success: true,
       message: "Lecture order updated successfully",
     });
   } catch (error) {
-    if (transactionStarted) {
-      await session.abortTransaction();
-    }
     logger.error("Error in updateLectureOrder:", error);
     res.status(500).json({ error: error.message });
-  } finally {
-    await session.endSession();
   }
 };
 
