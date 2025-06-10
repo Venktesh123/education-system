@@ -75,6 +75,7 @@ exports.createAnnouncement = catchAsyncErrors(async (req, res, next) => {
           "image/png",
           "image/jpg",
           "image/gif",
+          "image/webp",
         ];
 
         if (!allowedTypes.includes(imageFile.mimetype)) {
@@ -304,6 +305,7 @@ exports.updateAnnouncement = catchAsyncErrors(async (req, res, next) => {
           "image/png",
           "image/jpg",
           "image/gif",
+          "image/webp",
         ];
 
         if (!allowedTypes.includes(imageFile.mimetype)) {
