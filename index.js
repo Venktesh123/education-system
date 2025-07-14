@@ -7,41 +7,78 @@ const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.use(express.urlencoded({ extended: true }));
 
-// Middleware
+// IMPORTANT: CORS must be configured FIRST before other middleware
 app.use(
   cors({
-    origin: "*", // or just true
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: false, // Set to true if you need to send cookies
+    origin: [
+      "https://kiit-lms.vercel.app",
+      "http://localhost:3000",
+      "http://localhost:5173",
+      "http://localhost:3001",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+    ],
+    credentials: true,
+    optionsSuccessStatus: 200, // For legacy browser support
+    preflightContinue: false,
   })
 );
 
-app.use(express.json());
+// Handle preflight requests
+app.options("*", cors());
+
+// Set headers for all responses
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", req.headers.origin);
+  res.header("Access-Control-Allow-Credentials", "true");
+  res.header(
+    "Access-Control-Allow-Methods",
+    "GET,PUT,POST,DELETE,OPTIONS,PATCH"
+  );
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin"
+  );
+
+  if (req.method === "OPTIONS") {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
+});
+
+// Increase payload limits BEFORE express.json()
+app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+
+// Configure body-parser with larger limits
+app.use(bodyParser.json({ limit: "100mb" }));
+app.use(bodyParser.urlencoded({ limit: "100mb", extended: true }));
+
 const fileUpload = require("express-fileupload");
 
-// IMPORTANT: Configure express-fileupload GLOBALLY rather than per-route
-// This prevents multiple instances from conflicting
-app.use(bodyParser.json({ limit: "50mb" }));
-app.use(bodyParser.urlencoded({ limit: "50mb", extended: true }));
-
-// Configure express-fileupload globally to handle file uploads
-// This keeps the file in memory rather than writing to disk
+// Configure express-fileupload with larger limits
 app.use(
   fileUpload({
     createParentPath: true,
     limits: {
-      fileSize: 2000 * 1024 * 1024, // 10MB
+      fileSize: 100 * 1024 * 1024, // 100MB
     },
     abortOnLimit: true,
-    // Don't use tempFiles - we want to keep everything in memory
     useTempFiles: false,
-    // Enable debug if needed
     debug: false,
+    parseNested: true,
   })
 );
+
+// These limits should come AFTER body-parser
+app.use(express.json({ limit: "100mb" }));
 
 // MongoDB Connection
 connectDB();
@@ -50,8 +87,7 @@ connectDB();
 app.get("/", (req, res) => {
   res.send("<h1>Backend Working</h1>");
 });
-app.use(express.json({ limit: "15mb" }));
-app.use(express.urlencoded({ extended: true, limit: "15mb" }));
+
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/courses", require("./routes/courses"));
@@ -71,6 +107,23 @@ app.use("/api/discussion", require("./routes/discussion"));
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
+
+  // Handle file too large error
+  if (err.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({
+      error: "File too large",
+      message: "Maximum file size is 100MB",
+    });
+  }
+
+  // Handle JSON payload too large
+  if (err.type === "entity.too.large") {
+    return res.status(413).json({
+      error: "Payload too large",
+      message: "Request payload exceeds maximum size of 100MB",
+    });
+  }
+
   res.status(500).json({ error: "Internal Server Error" });
 });
 
