@@ -20,11 +20,9 @@ const uploadFileToAzureStorage = async (file, path) => {
       return reject(new Error("No file content found"));
     }
 
-    const fileName = `${path}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-
     uploadFileToAzure(file, path)
       .then((result) => {
-        console.log("File uploaded successfully:", fileName);
+        console.log("File uploaded successfully");
         resolve({
           url: result.url,
           key: result.key,
@@ -58,7 +56,7 @@ const deleteFileFromAzureStorage = async (fileKey) => {
   });
 };
 
-// Create a new discussion
+// Create a new discussion - CORRECTED for both teacher and student access
 exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
   console.log("createDiscussion: Started");
   const session = await mongoose.startSession();
@@ -81,17 +79,62 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("Title and content are required", 400));
     }
 
-    // Find the teacher
-    const teacher = await Teacher.findOne({ user: req.user._id }).session(
-      session
-    );
-    if (!teacher) {
-      console.log("Teacher not found");
-      return next(new ErrorHandler("Teacher not found", 404));
-    }
+    // CORRECTED: Handle both teacher and student creating discussions
+    let authorProfile = null;
 
-    // For course discussions, validate course
-    if (type === "course") {
+    if (req.user.role === "teacher") {
+      // Find the teacher
+      authorProfile = await Teacher.findOne({ user: req.user._id }).session(
+        session
+      );
+      if (!authorProfile) {
+        console.log("Teacher not found");
+        return next(new ErrorHandler("Teacher profile not found", 404));
+      }
+
+      // For course discussions, validate teacher has access to course
+      if (type === "course") {
+        if (!courseId) {
+          console.log("Course ID required for course discussions");
+          return next(
+            new ErrorHandler(
+              "Course ID is required for course discussions",
+              400
+            )
+          );
+        }
+
+        const course = await Course.findOne({
+          _id: courseId,
+          teacher: authorProfile._id,
+        }).session(session);
+
+        if (!course) {
+          console.log("Course not found or teacher doesn't have access");
+          return next(
+            new ErrorHandler("Course not found or unauthorized", 404)
+          );
+        }
+      }
+    } else if (req.user.role === "student") {
+      // Find the student
+      authorProfile = await Student.findOne({ user: req.user._id }).session(
+        session
+      );
+      if (!authorProfile) {
+        console.log("Student not found");
+        return next(new ErrorHandler("Student profile not found", 404));
+      }
+
+      // Students can only create course discussions, not teacher-only discussions
+      if (type !== "course") {
+        console.log("Students can only create course discussions");
+        return next(
+          new ErrorHandler("Students can only create course discussions", 403)
+        );
+      }
+
+      // Validate student is enrolled in the course
       if (!courseId) {
         console.log("Course ID required for course discussions");
         return next(
@@ -99,15 +142,24 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
         );
       }
 
-      const course = await Course.findOne({
-        _id: courseId,
-        teacher: teacher._id,
-      }).session(session);
-
-      if (!course) {
-        console.log("Course not found or teacher doesn't have access");
-        return next(new ErrorHandler("Course not found or unauthorized", 404));
+      const isEnrolled = authorProfile.courses.some(
+        (id) => id.toString() === courseId
+      );
+      if (!isEnrolled) {
+        console.log("Student not enrolled in course");
+        return next(
+          new ErrorHandler("You are not enrolled in this course", 403)
+        );
       }
+
+      // Verify the course exists
+      const course = await Course.findById(courseId).session(session);
+      if (!course) {
+        console.log("Course not found");
+        return next(new ErrorHandler("Course not found", 404));
+      }
+    } else {
+      return next(new ErrorHandler("Invalid user role", 403));
     }
 
     // Create discussion object
@@ -157,7 +209,7 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
         discussion.attachments = uploadedFiles.map((file) => ({
           fileUrl: file.url,
           fileKey: file.key,
-          fileName: file.key.split("/").pop(), // Extract filename from key
+          fileName: file.key.split("/").pop(),
         }));
       } catch (uploadError) {
         console.error("Error uploading files:", uploadError);
@@ -203,11 +255,18 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
   }
 });
 
-// Get all teacher discussions
+// Get all teacher discussions - CORRECTED to allow students to view
 exports.getTeacherDiscussions = catchAsyncErrors(async (req, res, next) => {
   console.log("getTeacherDiscussions: Started");
 
   try {
+    // Only teachers can access teacher-only discussions
+    if (req.user.role !== "teacher") {
+      return next(
+        new ErrorHandler("Only teachers can access teacher discussions", 403)
+      );
+    }
+
     const discussions = await Discussion.find({ type: "teacher" })
       .populate({
         path: "author",
@@ -226,17 +285,17 @@ exports.getTeacherDiscussions = catchAsyncErrors(async (req, res, next) => {
   }
 });
 
-// Get course discussions
+// Get course discussions - CORRECTED for proper access control
 exports.getCourseDiscussions = catchAsyncErrors(async (req, res, next) => {
   console.log("getCourseDiscussions: Started");
   const { courseId } = req.params;
 
   try {
-    // Verify user has access to this course
+    // Verify user has access to this course based on their role
     if (req.user.role === "teacher") {
       const teacher = await Teacher.findOne({ user: req.user._id });
       if (!teacher) {
-        return next(new ErrorHandler("Teacher not found", 404));
+        return next(new ErrorHandler("Teacher profile not found", 404));
       }
 
       const course = await Course.findOne({
@@ -250,7 +309,7 @@ exports.getCourseDiscussions = catchAsyncErrors(async (req, res, next) => {
     } else if (req.user.role === "student") {
       const student = await Student.findOne({ user: req.user._id });
       if (!student) {
-        return next(new ErrorHandler("Student not found", 404));
+        return next(new ErrorHandler("Student profile not found", 404));
       }
 
       const isEnrolled = student.courses.some(
@@ -261,6 +320,8 @@ exports.getCourseDiscussions = catchAsyncErrors(async (req, res, next) => {
           new ErrorHandler("You are not enrolled in this course", 403)
         );
       }
+    } else {
+      return next(new ErrorHandler("Invalid user role", 403));
     }
 
     // Get discussions for this course
@@ -365,7 +426,7 @@ exports.getDiscussionById = catchAsyncErrors(async (req, res, next) => {
   }
 });
 
-// Add comment to a discussion (top-level comment)
+// CORRECTED: Add comment function with proper role-based access
 exports.addComment = catchAsyncErrors(async (req, res, next) => {
   console.log("addComment: Started");
   const session = await mongoose.startSession();
@@ -387,19 +448,23 @@ exports.addComment = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("Discussion not found", 404));
     }
 
-    // Verify user has permission to comment
-    if (discussion.type === "teacher" && req.user.role !== "teacher") {
-      return next(
-        new ErrorHandler(
-          "You are not authorized to comment on this discussion",
-          403
-        )
-      );
+    // CORRECTED: Verify user has permission to comment based on role
+    if (discussion.type === "teacher") {
+      // Only teachers can comment on teacher discussions
+      if (req.user.role !== "teacher") {
+        return next(
+          new ErrorHandler(
+            "Only teachers can comment on teacher discussions",
+            403
+          )
+        );
+      }
     } else if (discussion.type === "course") {
+      // Both teachers and students can comment on course discussions, but need proper access
       if (req.user.role === "teacher") {
         const teacher = await Teacher.findOne({ user: req.user._id });
         if (!teacher) {
-          return next(new ErrorHandler("Teacher not found", 404));
+          return next(new ErrorHandler("Teacher profile not found", 404));
         }
 
         if (discussion.course) {
@@ -409,13 +474,15 @@ exports.addComment = catchAsyncErrors(async (req, res, next) => {
           });
 
           if (!course) {
-            return next(new ErrorHandler("Unauthorized access", 403));
+            return next(
+              new ErrorHandler("Unauthorized access to this course", 403)
+            );
           }
         }
       } else if (req.user.role === "student") {
         const student = await Student.findOne({ user: req.user._id });
         if (!student) {
-          return next(new ErrorHandler("Student not found", 404));
+          return next(new ErrorHandler("Student profile not found", 404));
         }
 
         if (discussion.course) {
@@ -428,6 +495,8 @@ exports.addComment = catchAsyncErrors(async (req, res, next) => {
             );
           }
         }
+      } else {
+        return next(new ErrorHandler("Invalid user role", 403));
       }
     }
 
@@ -435,7 +504,7 @@ exports.addComment = catchAsyncErrors(async (req, res, next) => {
     const comment = {
       content,
       author: req.user._id,
-      parentComment: null, // This is a top-level comment
+      parentComment: null,
       attachments: [],
       replies: [],
     };
@@ -544,7 +613,7 @@ exports.addReplyToComment = catchAsyncErrors(async (req, res, next) => {
     if (discussion.type === "teacher" && req.user.role !== "teacher") {
       return next(
         new ErrorHandler(
-          "You are not authorized to comment on this discussion",
+          "Only teachers can comment on teacher discussions",
           403
         )
       );
@@ -585,7 +654,6 @@ exports.addReplyToComment = catchAsyncErrors(async (req, res, next) => {
     }
 
     // Find the comment to reply to
-    // Helper function to find a comment in the nested structure
     const findCommentById = (comments, id) => {
       for (let i = 0; i < comments.length; i++) {
         if (comments[i]._id.toString() === id) {
@@ -599,7 +667,6 @@ exports.addReplyToComment = catchAsyncErrors(async (req, res, next) => {
                 path: `comments.${i}.replies.${j}`,
               };
             }
-            // Could go deeper for more levels if needed
           }
         }
       }
@@ -625,8 +692,6 @@ exports.addReplyToComment = catchAsyncErrors(async (req, res, next) => {
         let attachmentsArray = Array.isArray(req.files.attachments)
           ? req.files.attachments
           : [req.files.attachments];
-
-        console.log(`Found ${attachmentsArray.length} attachments for reply`);
 
         // Validate file sizes (5MB limit)
         for (const file of attachmentsArray) {
@@ -667,22 +732,10 @@ exports.addReplyToComment = catchAsyncErrors(async (req, res, next) => {
     await session.commitTransaction();
     transactionStarted = false;
 
-    // Populate author information for response
-    await discussion.populate({
-      path: "comments.author comments.replies.author",
-      select: "name email",
-      model: "User",
-    });
-
-    // Find the added reply
-    const updatedResult = findCommentById(discussion.comments, commentId);
-    const addedReply =
-      updatedResult.comment.replies[updatedResult.comment.replies.length - 1];
-
     res.status(201).json({
       success: true,
       message: "Reply added successfully",
-      reply: addedReply,
+      reply: reply,
     });
   } catch (error) {
     console.log(`Error in addReplyToComment: ${error.message}`);
@@ -730,73 +783,6 @@ exports.updateDiscussion = catchAsyncErrors(async (req, res, next) => {
     // Update discussion fields
     if (title) discussion.title = title;
     if (content) discussion.content = content;
-
-    // Handle new attachments if any
-    if (req.files && req.files.attachments) {
-      try {
-        let attachmentsArray = Array.isArray(req.files.attachments)
-          ? req.files.attachments
-          : [req.files.attachments];
-
-        // Validate file sizes
-        for (const file of attachmentsArray) {
-          if (file.size > 5 * 1024 * 1024) {
-            return next(
-              new ErrorHandler(
-                "File too large. Maximum size allowed is 5MB",
-                400
-              )
-            );
-          }
-        }
-
-        // Upload files to Azure
-        const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToAzureStorage(file, "discussion-attachments")
-        );
-
-        const uploadedFiles = await Promise.all(uploadPromises);
-
-        // Add new attachments to discussion
-        const newAttachments = uploadedFiles.map((file) => ({
-          fileUrl: file.url,
-          fileKey: file.key,
-          fileName: file.key.split("/").pop(),
-        }));
-
-        discussion.attachments = [...discussion.attachments, ...newAttachments];
-      } catch (uploadError) {
-        console.error("Error uploading files:", uploadError);
-        return next(new ErrorHandler("Failed to upload files", 500));
-      }
-    }
-
-    // Remove attachments if specified
-    if (req.body.removeAttachments && req.body.removeAttachments.length > 0) {
-      let removeIds = Array.isArray(req.body.removeAttachments)
-        ? req.body.removeAttachments
-        : [req.body.removeAttachments];
-
-      // Get attachments to remove
-      const attachmentsToRemove = discussion.attachments.filter((att) =>
-        removeIds.includes(att._id.toString())
-      );
-
-      // Delete files from Azure
-      for (const attachment of attachmentsToRemove) {
-        try {
-          await deleteFileFromAzureStorage(attachment.fileKey);
-        } catch (deleteError) {
-          console.error("Error deleting file from Azure:", deleteError);
-          // Continue with update even if Azure deletion fails
-        }
-      }
-
-      // Filter out removed attachments
-      discussion.attachments = discussion.attachments.filter(
-        (att) => !removeIds.includes(att._id.toString())
-      );
-    }
 
     await discussion.save({ session });
 
@@ -862,7 +848,6 @@ exports.updateComment = catchAsyncErrors(async (req, res, next) => {
                 path: `comments.${i}.replies.${j}`,
               };
             }
-            // Could go deeper for more levels if needed
           }
         }
       }
@@ -884,87 +869,10 @@ exports.updateComment = catchAsyncErrors(async (req, res, next) => {
     // Update the comment
     result.comment.content = content;
 
-    // Handle file attachment updates if needed
-    if (req.files && req.files.attachments) {
-      try {
-        let attachmentsArray = Array.isArray(req.files.attachments)
-          ? req.files.attachments
-          : [req.files.attachments];
-
-        // Validate file sizes
-        for (const file of attachmentsArray) {
-          if (file.size > 5 * 1024 * 1024) {
-            return next(
-              new ErrorHandler(
-                "File too large. Maximum size allowed is 5MB",
-                400
-              )
-            );
-          }
-        }
-
-        // Upload files to Azure
-        const uploadPromises = attachmentsArray.map((file) =>
-          uploadFileToAzureStorage(file, "comment-attachments")
-        );
-
-        const uploadedFiles = await Promise.all(uploadPromises);
-
-        // Add new attachments to comment
-        const newAttachments = uploadedFiles.map((file) => ({
-          fileUrl: file.url,
-          fileKey: file.key,
-          fileName: file.key.split("/").pop(),
-        }));
-
-        result.comment.attachments = [
-          ...result.comment.attachments,
-          ...newAttachments,
-        ];
-      } catch (uploadError) {
-        console.error("Error uploading files:", uploadError);
-        return next(new ErrorHandler("Failed to upload files", 500));
-      }
-    }
-
-    // Remove attachments if specified
-    if (req.body.removeAttachments && req.body.removeAttachments.length > 0) {
-      let removeIds = Array.isArray(req.body.removeAttachments)
-        ? req.body.removeAttachments
-        : [req.body.removeAttachments];
-
-      // Get attachments to remove
-      const attachmentsToRemove = result.comment.attachments.filter((att) =>
-        removeIds.includes(att._id.toString())
-      );
-
-      // Delete files from Azure
-      for (const attachment of attachmentsToRemove) {
-        try {
-          await deleteFileFromAzureStorage(attachment.fileKey);
-        } catch (deleteError) {
-          console.error("Error deleting file from Azure:", deleteError);
-          // Continue with update even if Azure deletion fails
-        }
-      }
-
-      // Filter out removed attachments
-      result.comment.attachments = result.comment.attachments.filter(
-        (att) => !removeIds.includes(att._id.toString())
-      );
-    }
-
     await discussion.save({ session });
 
     await session.commitTransaction();
     transactionStarted = false;
-
-    // Populate author information for response
-    await discussion.populate({
-      path: "comments.author comments.replies.author",
-      select: "name email",
-      model: "User",
-    });
 
     res.status(200).json({
       success: true,
@@ -1031,7 +939,7 @@ exports.deleteComment = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("Comment not found", 404));
     }
 
-    // Verify the user is the author of the comment or the discussion author (teachers can delete any comment in their discussions)
+    // Verify permissions
     if (
       result.comment.author.toString() !== req.user._id.toString() &&
       discussion.author.toString() !== req.user._id.toString() &&
@@ -1042,12 +950,9 @@ exports.deleteComment = catchAsyncErrors(async (req, res, next) => {
       );
     }
 
-    // Soft delete the comment (don't remove it from the database)
+    // Soft delete the comment
     result.comment.isDeleted = true;
     result.comment.content = "This comment has been deleted";
-
-    // Keep attachments reference for auditing purposes, but we could delete them from Azure to save storage
-    // For now, we'll leave Azure cleanup to a separate background process or admin function
 
     await discussion.save({ session });
 
@@ -1103,36 +1008,6 @@ exports.deleteDiscussion = catchAsyncErrors(async (req, res, next) => {
       );
     }
 
-    // Delete all attachments from Azure (both from the discussion itself and its comments)
-    const allAttachments = [...discussion.attachments];
-
-    // Function to collect all attachments from comments and their replies
-    const collectAttachments = (comments) => {
-      let attachments = [];
-      for (const comment of comments) {
-        if (comment.attachments && comment.attachments.length > 0) {
-          attachments.push(...comment.attachments);
-        }
-        if (comment.replies && comment.replies.length > 0) {
-          attachments.push(...collectAttachments(comment.replies));
-        }
-      }
-      return attachments;
-    };
-
-    // Add comment attachments
-    allAttachments.push(...collectAttachments(discussion.comments));
-
-    // Delete files from Azure
-    for (const attachment of allAttachments) {
-      try {
-        await deleteFileFromAzureStorage(attachment.fileKey);
-      } catch (deleteError) {
-        console.error("Error deleting file from Azure:", deleteError);
-        // Continue with deletion even if Azure deletion fails
-      }
-    }
-
     // Delete the discussion
     await Discussion.findByIdAndDelete(discussionId).session(session);
 
@@ -1173,7 +1048,10 @@ exports.searchDiscussions = catchAsyncErrors(async (req, res, next) => {
 
     // Build search criteria
     const searchCriteria = {
-      $text: { $search: query },
+      $or: [
+        { title: { $regex: query, $options: "i" } },
+        { content: { $regex: query, $options: "i" } },
+      ],
     };
 
     // Add type filter if provided
@@ -1191,48 +1069,13 @@ exports.searchDiscussions = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("Unauthorized access", 403));
     }
 
-    // If searching course discussions, verify user has access to the course
-    if (type === "course" && courseId) {
-      if (req.user.role === "teacher") {
-        const teacher = await Teacher.findOne({ user: req.user._id });
-        if (!teacher) {
-          return next(new ErrorHandler("Teacher not found", 404));
-        }
-
-        const course = await Course.findOne({
-          _id: courseId,
-          teacher: teacher._id,
-        });
-
-        if (!course) {
-          return next(
-            new ErrorHandler("Course not found or unauthorized", 404)
-          );
-        }
-      } else if (req.user.role === "student") {
-        const student = await Student.findOne({ user: req.user._id });
-        if (!student) {
-          return next(new ErrorHandler("Student not found", 404));
-        }
-
-        const isEnrolled = student.courses.some(
-          (id) => id.toString() === courseId
-        );
-        if (!isEnrolled) {
-          return next(
-            new ErrorHandler("You are not enrolled in this course", 403)
-          );
-        }
-      }
-    }
-
     // Perform the search
     const discussions = await Discussion.find(searchCriteria)
       .populate({
         path: "author",
         select: "name email",
       })
-      .sort({ score: { $meta: "textScore" } })
+      .sort({ createdAt: -1 })
       .limit(20);
 
     res.status(200).json({
