@@ -10,7 +10,15 @@ const PORT = process.env.PORT || 3000;
 app.use(express.urlencoded({ extended: true }));
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: "*", // or just true
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: false, // Set to true if you need to send cookies
+  })
+);
+
 app.use(express.json());
 const fileUpload = require("express-fileupload");
 
