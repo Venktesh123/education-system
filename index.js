@@ -55,11 +55,11 @@ app.use((req, res, next) => {
 });
 
 // Increase payload limits BEFORE express.json()
-app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+app.use(express.urlencoded({ extended: true, limit: "200mb" }));
 
 // Configure body-parser with larger limits
-app.use(bodyParser.json({ limit: "100mb" }));
-app.use(bodyParser.urlencoded({ limit: "100mb", extended: true }));
+app.use(bodyParser.json({ limit: "200mb" }));
+app.use(bodyParser.urlencoded({ limit: "200mb", extended: true }));
 
 const fileUpload = require("express-fileupload");
 
@@ -68,7 +68,7 @@ app.use(
   fileUpload({
     createParentPath: true,
     limits: {
-      fileSize: 100 * 1024 * 1024, // 100MB
+      fileSize: 200 * 1024 * 1024, // 200MB
     },
     abortOnLimit: true,
     useTempFiles: false,
@@ -78,7 +78,7 @@ app.use(
 );
 
 // These limits should come AFTER body-parser
-app.use(express.json({ limit: "100mb" }));
+app.use(express.json({ limit: "200mb" }));
 
 // MongoDB Connection
 connectDB();
@@ -112,7 +112,7 @@ app.use((err, req, res, next) => {
   if (err.code === "LIMIT_FILE_SIZE") {
     return res.status(413).json({
       error: "File too large",
-      message: "Maximum file size is 100MB",
+      message: "Maximum file size is 200MB",
     });
   }
 
@@ -120,7 +120,7 @@ app.use((err, req, res, next) => {
   if (err.type === "entity.too.large") {
     return res.status(413).json({
       error: "Payload too large",
-      message: "Request payload exceeds maximum size of 100MB",
+      message: "Request payload exceeds maximum size of 200MB",
     });
   }
 
