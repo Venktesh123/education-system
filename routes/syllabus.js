@@ -28,38 +28,116 @@ router.put(
   syllabusController.updateModule
 );
 
-// Add content to module - POST request to add content
+// ===============================
+// VIDEO ROUTES
+// ===============================
+
+// Add video to module
 router.post(
-  "/course/:courseId/syllabus/module/:moduleId/content",
+  "/course/:courseId/syllabus/module/:moduleId/videos",
   auth,
   checkRole(["teacher"]),
-  syllabusController.addModuleContent
+  syllabusController.addVideoToModule
 );
 
-// Update content item - PUT request to update existing content
+// Update video in module
 router.put(
-  "/course/:courseId/syllabus/module/:moduleId/content/:contentId",
+  "/course/:courseId/syllabus/module/:moduleId/videos/:videoId",
   auth,
   checkRole(["teacher"]),
-  syllabusController.updateContentItem
+  syllabusController.updateVideoInModule
 );
 
-// Delete content item
+// Delete video from module
 router.delete(
-  "/course/:courseId/syllabus/module/:moduleId/content/:contentId",
+  "/course/:courseId/syllabus/module/:moduleId/videos/:videoId",
   auth,
   checkRole(["teacher"]),
-  syllabusController.deleteContentItem
+  syllabusController.deleteVideoFromModule
 );
 
-// Remove this route since deleteResource is not defined in your controller
-/* 
-router.delete(
-  "/course/:courseId/syllabus/module/:moduleId/resource/:resourceId",
+// ===============================
+// LINK ROUTES
+// ===============================
+
+// Add link to module
+router.post(
+  "/course/:courseId/syllabus/module/:moduleId/links",
   auth,
   checkRole(["teacher"]),
-  syllabusController.deleteResource
+  syllabusController.addLinkToModule
 );
-*/
+
+// Update link in module
+router.put(
+  "/course/:courseId/syllabus/module/:moduleId/links/:linkId",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.updateLinkInModule
+);
+
+// Delete link from module
+router.delete(
+  "/course/:courseId/syllabus/module/:moduleId/links/:linkId",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.deleteLinkFromModule
+);
+
+// ===============================
+// PDF ROUTES
+// ===============================
+
+// Add PDF to module
+router.post(
+  "/course/:courseId/syllabus/module/:moduleId/pdfs",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.addPdfToModule
+);
+
+// Update PDF in module
+router.put(
+  "/course/:courseId/syllabus/module/:moduleId/pdfs/:pdfId",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.updatePdfInModule
+);
+
+// Delete PDF from module
+router.delete(
+  "/course/:courseId/syllabus/module/:moduleId/pdfs/:pdfId",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.deletePdfFromModule
+);
+
+// ===============================
+// PPT ROUTES
+// ===============================
+
+// Add PPT to module
+router.post(
+  "/course/:courseId/syllabus/module/:moduleId/ppts",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.addPptToModule
+);
+
+// Update PPT in module
+router.put(
+  "/course/:courseId/syllabus/module/:moduleId/ppts/:pptId",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.updatePptInModule
+);
+
+// Delete PPT from module
+router.delete(
+  "/course/:courseId/syllabus/module/:moduleId/ppts/:pptId",
+  auth,
+  checkRole(["teacher"]),
+  syllabusController.deletePptFromModule
+);
 
 module.exports = router;

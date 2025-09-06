@@ -1,13 +1,8 @@
 const mongoose = require("mongoose");
 
-// Content Item Schema for different types of content
-const contentItemSchema = new mongoose.Schema({
-  type: {
-    type: String,
-    enum: ["file", "link", "video", "text"],
-    required: true,
-  },
-  title: {
+// Schema for videos in a module
+const moduleVideoSchema = new mongoose.Schema({
+  name: {
     type: String,
     required: true,
   },
@@ -15,89 +10,87 @@ const contentItemSchema = new mongoose.Schema({
     type: String,
     default: "",
   },
-  // For file type
-  fileType: {
-    type: String,
-    enum: ["pdf", "presentation", "document", "image", "other"],
-    required: function () {
-      return this.type === "file";
+  thumbnail: {
+    thumbnailUrl: {
+      type: String,
+      default: "",
+    },
+    thumbnailKey: {
+      type: String,
+      default: "",
     },
   },
   fileUrl: {
     type: String,
-    required: function () {
-      return this.type === "file";
-    },
+    required: true,
   },
   fileKey: {
     type: String,
-    required: function () {
-      return this.type === "file";
-    },
+    required: true,
   },
-  fileName: {
-    type: String,
-    required: function () {
-      return this.type === "file";
-    },
-  },
-  // For link type
-  url: {
-    type: String,
-    required: function () {
-      return this.type === "link";
-    },
-  },
-  // For video type
-  videoUrl: {
-    type: String,
-    required: function () {
-      return this.type === "video";
-    },
-  },
-  videoKey: {
-    type: String,
-    // Only required if we're hosting the video ourselves
-  },
-  videoProvider: {
-    type: String,
-    enum: ["youtube", "vimeo", "other"],
-    default: "other",
-    required: function () {
-      return this.type === "video";
-    },
-  },
-  // For text type
-  content: {
-    type: String,
-    required: function () {
-      return this.type === "text";
-    },
-  },
-  // Common fields
-  order: {
-    type: Number,
-    default: 0,
+  createDate: {
+    type: Date,
+    default: Date.now,
   },
   isActive: {
     type: Boolean,
     default: true,
   },
-  createdAt: {
+});
+
+// Schema for links in a module
+const moduleLinkSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+  },
+  description: {
+    type: String,
+    default: "",
+  },
+  thumbnail: {
+    thumbnailUrl: {
+      type: String,
+      default: "",
+    },
+    thumbnailKey: {
+      type: String,
+      default: "",
+    },
+  },
+  fileUrl: {
+    type: String,
+    required: true,
+  },
+  createDate: {
     type: Date,
     default: Date.now,
   },
-  updatedAt: {
-    type: Date,
-    default: Date.now,
+  isActive: {
+    type: Boolean,
+    default: true,
   },
 });
 
-const resourceSchema = new mongoose.Schema({
-  fileType: {
+// Schema for PDFs in a module
+const modulePdfSchema = new mongoose.Schema({
+  name: {
     type: String,
-    enum: ["pdf", "ppt", "pptx", "other"],
     required: true,
+  },
+  description: {
+    type: String,
+    default: "",
+  },
+  thumbnail: {
+    thumbnailUrl: {
+      type: String,
+      default: "",
+    },
+    thumbnailKey: {
+      type: String,
+      default: "",
+    },
   },
   fileUrl: {
     type: String,
@@ -107,13 +100,51 @@ const resourceSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
-  fileName: {
+  createDate: {
+    type: Date,
+    default: Date.now,
+  },
+  isActive: {
+    type: Boolean,
+    default: true,
+  },
+});
+
+// Schema for PPTs in a module
+const modulePptSchema = new mongoose.Schema({
+  name: {
     type: String,
     required: true,
   },
-  uploadDate: {
+  description: {
+    type: String,
+    default: "",
+  },
+  thumbnail: {
+    thumbnailUrl: {
+      type: String,
+      default: "",
+    },
+    thumbnailKey: {
+      type: String,
+      default: "",
+    },
+  },
+  fileUrl: {
+    type: String,
+    required: true,
+  },
+  fileKey: {
+    type: String,
+    required: true,
+  },
+  createDate: {
     type: Date,
     default: Date.now,
+  },
+  isActive: {
+    type: Boolean,
+    default: true,
   },
 });
 
@@ -136,18 +167,14 @@ const moduleSchema = new mongoose.Schema({
       required: true,
     },
   ],
-  // For backward compatibility
-  link: {
-    type: String,
-    default: "",
-  },
-  // For backward compatibility
-  resources: [resourceSchema],
 
-  // New field for all types of content
-  contentItems: [contentItemSchema],
+  // New structure with separate arrays for each content type
+  videos: [moduleVideoSchema],
+  links: [moduleLinkSchema],
+  pdfs: [modulePdfSchema],
+  ppts: [modulePptSchema],
 
-  // NEW: Lectures for this module
+  // Lectures for this module
   lectures: [
     {
       type: mongoose.Schema.Types.ObjectId,
