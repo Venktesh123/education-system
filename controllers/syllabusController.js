@@ -30,11 +30,14 @@ const handleFileUploads = async (files, allowedTypes, path, next) => {
       );
     }
 
-    // Validate file size (10MB)
-    if (file.size > 10 * 1024 * 1024) {
+    // Validate file size (50MB for videos, 10MB for others)
+    const maxSize = allowedTypes.includes("video/mp4")
+      ? 50 * 1024 * 1024
+      : 10 * 1024 * 1024;
+    if (file.size > maxSize) {
       console.log(`File too large: ${file.size} bytes`);
       throw new ErrorHandler(
-        `File too large. Maximum size allowed is 10MB`,
+        `File too large. Maximum size allowed is ${maxSize / (1024 * 1024)}MB`,
         400
       );
     }
@@ -70,7 +73,6 @@ exports.getCourseSyllabus = catchAsyncErrors(async (req, res, next) => {
   const syllabus = await CourseSyllabus.findOne({ course: courseId });
   if (!syllabus) {
     console.log(`No syllabus found for course: ${courseId}`);
-    // Just return an empty result instead of an error
     return res.status(200).json({
       success: true,
       courseId: courseId,
@@ -114,9 +116,9 @@ exports.getModuleById = catchAsyncErrors(async (req, res, next) => {
   });
 });
 
-// Add content to module - handles all content types
-exports.addModuleContent = catchAsyncErrors(async (req, res, next) => {
-  console.log("addModuleContent: Started");
+// Add video to module
+exports.addVideoToModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("addVideoToModule: Started");
   const session = await mongoose.startSession();
   let transactionStarted = false;
 
@@ -126,26 +128,18 @@ exports.addModuleContent = catchAsyncErrors(async (req, res, next) => {
     console.log("Transaction started");
 
     const { courseId, moduleId } = req.params;
-    const { contentType, title, description } = req.body;
+    const { name, description } = req.body;
 
-    console.log(
-      `Adding ${contentType} content to module ${moduleId} for course: ${courseId}`
-    );
+    console.log(`Adding video to module ${moduleId} for course: ${courseId}`);
 
-    // Validate content type
-    if (!["file", "link", "video", "text"].includes(contentType)) {
-      return next(
-        new ErrorHandler(
-          "Invalid content type. Must be file, link, video, or text",
-          400
-        )
-      );
+    // Validate inputs
+    if (!name) {
+      return next(new ErrorHandler("Video name is required", 400));
     }
 
-    // Check if teacher is authorized to modify this course
+    // Check if teacher is authorized
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
-      console.log("Teacher not found");
       return next(new ErrorHandler("Teacher not found", 404));
     }
 
@@ -155,229 +149,125 @@ exports.addModuleContent = catchAsyncErrors(async (req, res, next) => {
     });
 
     if (!course) {
-      console.log("Course not found or teacher not authorized");
       return next(new ErrorHandler("Course not found or unauthorized", 404));
     }
 
-    // Find CourseSyllabus
+    // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
       session
     );
     if (!syllabus) {
-      console.log(`No syllabus found for course: ${courseId}`);
       return next(new ErrorHandler("No syllabus found for this course", 404));
     }
 
-    // Find specific module
     const module = syllabus.modules.id(moduleId);
     if (!module) {
-      console.log(`Module not found: ${moduleId}`);
       return next(new ErrorHandler("Module not found", 404));
     }
 
-    // Initialize contentItems array if it doesn't exist
-    if (!module.contentItems) {
-      module.contentItems = [];
+    // Handle video file upload
+    if (!req.files || !req.files.video) {
+      return next(new ErrorHandler("Video file is required", 400));
     }
 
-    // Create base content item
-    const contentItem = {
-      type: contentType,
-      title: title || "Untitled Content",
+    const allowedVideoTypes = [
+      "video/mp4",
+      "video/webm",
+      "video/avi",
+      "video/mov",
+    ];
+    const { filesArray, uploadedFiles } = await handleFileUploads(
+      req.files.video,
+      allowedVideoTypes,
+      `syllabus-videos/course-${courseId}/module-${moduleId}`,
+      next
+    );
+
+    const videoFile = filesArray[0];
+    const uploadedVideo = uploadedFiles[0];
+
+    // Handle thumbnail upload if provided
+    let thumbnailData = { thumbnailUrl: "", thumbnailKey: "" };
+    if (req.files && req.files.thumbnail) {
+      const allowedImageTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "image/gif",
+      ];
+      const { uploadedFiles: thumbnailFiles } = await handleFileUploads(
+        req.files.thumbnail,
+        allowedImageTypes,
+        `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
+        next
+      );
+      thumbnailData.thumbnailUrl = thumbnailFiles[0].url;
+      thumbnailData.thumbnailKey = thumbnailFiles[0].key;
+    }
+
+    // Create video object
+    const videoData = {
+      name,
       description: description || "",
-      order: module.contentItems.length + 1,
+      thumbnail: thumbnailData,
+      fileUrl: uploadedVideo.url,
+      fileKey: uploadedVideo.key,
+      createDate: new Date(),
+      isActive: true,
     };
 
-    // Process content based on type
-    switch (contentType) {
-      case "file":
-        // Handle file upload
-        if (!req.files || !req.files.file) {
-          return next(new ErrorHandler("No file uploaded", 400));
-        }
-
-        try {
-          const allowedTypes = [
-            "application/pdf",
-            "application/vnd.ms-powerpoint",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "image/jpeg",
-            "image/png",
-            "image/gif",
-          ];
-
-          const { filesArray, uploadedFiles } = await handleFileUploads(
-            req.files.file,
-            allowedTypes,
-            "syllabus-files",
-            next
-          );
-
-          const file = filesArray[0];
-          const uploadedFile = uploadedFiles[0];
-
-          // Determine file type
-          let fileType = "other";
-          if (file.mimetype === "application/pdf") {
-            fileType = "pdf";
-          } else if (
-            file.mimetype === "application/vnd.ms-powerpoint" ||
-            file.mimetype ===
-              "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-          ) {
-            fileType = "presentation";
-          } else if (
-            file.mimetype === "application/msword" ||
-            file.mimetype ===
-              "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          ) {
-            fileType = "document";
-          } else if (file.mimetype.startsWith("image/")) {
-            fileType = "image";
-          }
-
-          // Add file-specific properties
-          contentItem.fileType = fileType;
-          contentItem.fileName = file.name;
-          contentItem.fileUrl = uploadedFile.url;
-          contentItem.fileKey = uploadedFile.key;
-        } catch (uploadError) {
-          console.error("Error handling file upload:", uploadError);
-          return next(
-            new ErrorHandler(
-              uploadError.message || "Failed to upload file",
-              uploadError.statusCode || 500
-            )
-          );
-        }
-        break;
-
-      case "link":
-        // Handle link
-        const { url } = req.body;
-        if (!url) {
-          return next(
-            new ErrorHandler("URL is required for link content type", 400)
-          );
-        }
-
-        contentItem.url = url;
-        break;
-
-      case "video":
-        // Handle video
-        const { videoUrl, videoProvider } = req.body;
-        if (!videoUrl) {
-          return next(
-            new ErrorHandler(
-              "Video URL is required for video content type",
-              400
-            )
-          );
-        }
-
-        contentItem.videoUrl = videoUrl;
-        contentItem.videoProvider = videoProvider || "other";
-
-        // If video file is uploaded instead of URL
-        if (req.files && req.files.videoFile) {
-          try {
-            const allowedTypes = ["video/mp4", "video/webm", "video/ogg"];
-
-            const { filesArray, uploadedFiles } = await handleFileUploads(
-              req.files.videoFile,
-              allowedTypes,
-              "syllabus-videos",
-              next
-            );
-
-            const uploadedFile = uploadedFiles[0];
-
-            // Override videoUrl with the uploaded file URL
-            contentItem.videoUrl = uploadedFile.url;
-            contentItem.videoKey = uploadedFile.key;
-          } catch (uploadError) {
-            console.error("Error handling video upload:", uploadError);
-            return next(
-              new ErrorHandler(
-                uploadError.message || "Failed to upload video",
-                uploadError.statusCode || 500
-              )
-            );
-          }
-        }
-        break;
-
-      case "text":
-        // Handle text content
-        const { content } = req.body;
-        if (!content) {
-          return next(
-            new ErrorHandler("Content is required for text content type", 400)
-          );
-        }
-
-        contentItem.content = content;
-        break;
+    // Add video to module
+    if (!module.videos) {
+      module.videos = [];
     }
+    module.videos.push(videoData);
 
-    // Add new content item to module
-    module.contentItems.push(contentItem);
-
-    console.log("Saving updated syllabus");
     await syllabus.save({ session });
-    console.log("Syllabus updated with new content item");
 
-    console.log("Committing transaction");
     await session.commitTransaction();
     transactionStarted = false;
-    console.log("Transaction committed");
 
     res.status(201).json({
       success: true,
-      message: "Content added to module successfully",
-      contentItem: module.contentItems[module.contentItems.length - 1],
+      message: "Video added to module successfully",
+      video: module.videos[module.videos.length - 1],
     });
   } catch (error) {
-    console.log(`Error in addModuleContent: ${error.message}`);
+    console.log(`Error in addVideoToModule: ${error.message}`);
     if (transactionStarted) {
       try {
-        console.log("Aborting transaction");
         await session.abortTransaction();
-        console.log("Transaction aborted");
       } catch (abortError) {
         console.error("Error aborting transaction:", abortError);
       }
     }
     return next(new ErrorHandler(error.message, 500));
   } finally {
-    console.log("Ending session");
     await session.endSession();
-    console.log("Session ended");
   }
 });
 
-// Update module with resources
-exports.updateModule = catchAsyncErrors(async (req, res, next) => {
-  console.log("updateModule: Started");
+// Add link to module
+exports.addLinkToModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("addLinkToModule: Started");
   const session = await mongoose.startSession();
   let transactionStarted = false;
+
   try {
     await session.startTransaction();
     transactionStarted = true;
-    console.log("Transaction started");
 
-    const { moduleNumber, moduleTitle, description } = req.body;
     const { courseId, moduleId } = req.params;
+    const { name, description, fileUrl } = req.body;
 
-    console.log(`Updating module ${moduleId} for course: ${courseId}`);
+    // Validate inputs
+    if (!name || !fileUrl) {
+      return next(new ErrorHandler("Link name and URL are required", 400));
+    }
 
-    // Check if teacher is authorized to modify this course
+    // Check if teacher is authorized
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
-      console.log("Teacher not found");
       return next(new ErrorHandler("Teacher not found", 404));
     }
 
@@ -387,23 +277,367 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
     });
 
     if (!course) {
-      console.log("Course not found or teacher not authorized");
       return next(new ErrorHandler("Course not found or unauthorized", 404));
     }
 
-    // Find CourseSyllabus
+    // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
       session
     );
     if (!syllabus) {
-      console.log(`No syllabus found for course: ${courseId}`);
       return next(new ErrorHandler("No syllabus found for this course", 404));
     }
 
-    // Find specific module
     const module = syllabus.modules.id(moduleId);
     if (!module) {
-      console.log(`Module not found: ${moduleId}`);
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Handle thumbnail upload if provided
+    let thumbnailData = { thumbnailUrl: "", thumbnailKey: "" };
+    if (req.files && req.files.thumbnail) {
+      const allowedImageTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "image/gif",
+      ];
+      const { uploadedFiles: thumbnailFiles } = await handleFileUploads(
+        req.files.thumbnail,
+        allowedImageTypes,
+        `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
+        next
+      );
+      thumbnailData.thumbnailUrl = thumbnailFiles[0].url;
+      thumbnailData.thumbnailKey = thumbnailFiles[0].key;
+    }
+
+    // Create link object
+    const linkData = {
+      name,
+      description: description || "",
+      thumbnail: thumbnailData,
+      fileUrl,
+      createDate: new Date(),
+      isActive: true,
+    };
+
+    // Add link to module
+    if (!module.links) {
+      module.links = [];
+    }
+    module.links.push(linkData);
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(201).json({
+      success: true,
+      message: "Link added to module successfully",
+      link: module.links[module.links.length - 1],
+    });
+  } catch (error) {
+    console.log(`Error in addLinkToModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Add PDF to module
+exports.addPdfToModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("addPdfToModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId } = req.params;
+    const { name, description } = req.body;
+
+    // Validate inputs
+    if (!name) {
+      return next(new ErrorHandler("PDF name is required", 400));
+    }
+
+    // Check if teacher is authorized
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Handle PDF file upload
+    if (!req.files || !req.files.pdf) {
+      return next(new ErrorHandler("PDF file is required", 400));
+    }
+
+    const allowedPdfTypes = ["application/pdf"];
+    const { filesArray, uploadedFiles } = await handleFileUploads(
+      req.files.pdf,
+      allowedPdfTypes,
+      `syllabus-pdfs/course-${courseId}/module-${moduleId}`,
+      next
+    );
+
+    const uploadedPdf = uploadedFiles[0];
+
+    // Handle thumbnail upload if provided
+    let thumbnailData = { thumbnailUrl: "", thumbnailKey: "" };
+    if (req.files && req.files.thumbnail) {
+      const allowedImageTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "image/gif",
+      ];
+      const { uploadedFiles: thumbnailFiles } = await handleFileUploads(
+        req.files.thumbnail,
+        allowedImageTypes,
+        `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
+        next
+      );
+      thumbnailData.thumbnailUrl = thumbnailFiles[0].url;
+      thumbnailData.thumbnailKey = thumbnailFiles[0].key;
+    }
+
+    // Create PDF object
+    const pdfData = {
+      name,
+      description: description || "",
+      thumbnail: thumbnailData,
+      fileUrl: uploadedPdf.url,
+      fileKey: uploadedPdf.key,
+      createDate: new Date(),
+      isActive: true,
+    };
+
+    // Add PDF to module
+    if (!module.pdfs) {
+      module.pdfs = [];
+    }
+    module.pdfs.push(pdfData);
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(201).json({
+      success: true,
+      message: "PDF added to module successfully",
+      pdf: module.pdfs[module.pdfs.length - 1],
+    });
+  } catch (error) {
+    console.log(`Error in addPdfToModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Add PPT to module
+exports.addPptToModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("addPptToModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId } = req.params;
+    const { name, description } = req.body;
+
+    // Validate inputs
+    if (!name) {
+      return next(new ErrorHandler("PPT name is required", 400));
+    }
+
+    // Check if teacher is authorized
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Handle PPT file upload
+    if (!req.files || !req.files.ppt) {
+      return next(new ErrorHandler("PPT file is required", 400));
+    }
+
+    const allowedPptTypes = [
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ];
+    const { filesArray, uploadedFiles } = await handleFileUploads(
+      req.files.ppt,
+      allowedPptTypes,
+      `syllabus-ppts/course-${courseId}/module-${moduleId}`,
+      next
+    );
+
+    const uploadedPpt = uploadedFiles[0];
+
+    // Handle thumbnail upload if provided
+    let thumbnailData = { thumbnailUrl: "", thumbnailKey: "" };
+    if (req.files && req.files.thumbnail) {
+      const allowedImageTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "image/gif",
+      ];
+      const { uploadedFiles: thumbnailFiles } = await handleFileUploads(
+        req.files.thumbnail,
+        allowedImageTypes,
+        `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
+        next
+      );
+      thumbnailData.thumbnailUrl = thumbnailFiles[0].url;
+      thumbnailData.thumbnailKey = thumbnailFiles[0].key;
+    }
+
+    // Create PPT object
+    const pptData = {
+      name,
+      description: description || "",
+      thumbnail: thumbnailData,
+      fileUrl: uploadedPpt.url,
+      fileKey: uploadedPpt.key,
+      createDate: new Date(),
+      isActive: true,
+    };
+
+    // Add PPT to module
+    if (!module.ppts) {
+      module.ppts = [];
+    }
+    module.ppts.push(pptData);
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(201).json({
+      success: true,
+      message: "PPT added to module successfully",
+      ppt: module.ppts[module.ppts.length - 1],
+    });
+  } catch (error) {
+    console.log(`Error in addPptToModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Update module basic info
+exports.updateModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("updateModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { moduleNumber, moduleTitle, description } = req.body;
+    const { courseId, moduleId } = req.params;
+
+    // Check if teacher is authorized
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
       return next(new ErrorHandler("Module not found", 404));
     }
 
@@ -412,63 +646,46 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
     if (moduleTitle) module.moduleTitle = moduleTitle;
     if (description !== undefined) module.description = description;
 
-    console.log("Saving updated syllabus");
     await syllabus.save({ session });
-    console.log("Syllabus updated");
 
-    console.log("Committing transaction");
     await session.commitTransaction();
     transactionStarted = false;
-    console.log("Transaction committed");
 
     res.status(200).json({
       success: true,
       message: "Module updated successfully",
-      courseId: courseId,
-      moduleId: moduleId,
       module: syllabus.modules.id(moduleId),
     });
   } catch (error) {
     console.log(`Error in updateModule: ${error.message}`);
     if (transactionStarted) {
       try {
-        console.log("Aborting transaction");
         await session.abortTransaction();
-        console.log("Transaction aborted");
       } catch (abortError) {
         console.error("Error aborting transaction:", abortError);
       }
     }
     return next(new ErrorHandler(error.message, 500));
   } finally {
-    console.log("Ending session");
     await session.endSession();
-    console.log("Session ended");
   }
 });
 
-// Update content item
-exports.updateContentItem = catchAsyncErrors(async (req, res, next) => {
-  console.log("updateContentItem: Started");
+// Delete video from module
+exports.deleteVideoFromModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("deleteVideoFromModule: Started");
   const session = await mongoose.startSession();
   let transactionStarted = false;
 
   try {
     await session.startTransaction();
     transactionStarted = true;
-    console.log("Transaction started");
 
-    const { courseId, moduleId, contentId } = req.params;
-    const { title, description } = req.body;
+    const { courseId, moduleId, videoId } = req.params;
 
-    console.log(
-      `Updating content ${contentId} in module ${moduleId} for course: ${courseId}`
-    );
-
-    // Check if teacher is authorized to modify this course
+    // Check authorization
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
-      console.log("Teacher not found");
       return next(new ErrorHandler("Teacher not found", 404));
     }
 
@@ -478,252 +695,87 @@ exports.updateContentItem = catchAsyncErrors(async (req, res, next) => {
     });
 
     if (!course) {
-      console.log("Course not found or teacher not authorized");
       return next(new ErrorHandler("Course not found or unauthorized", 404));
     }
 
-    // Find CourseSyllabus
+    // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
       session
     );
     if (!syllabus) {
-      console.log(`No syllabus found for course: ${courseId}`);
       return next(new ErrorHandler("No syllabus found for this course", 404));
     }
 
-    // Find specific module
     const module = syllabus.modules.id(moduleId);
     if (!module) {
-      console.log(`Module not found: ${moduleId}`);
       return next(new ErrorHandler("Module not found", 404));
     }
 
-    // Find content item
-    if (!module.contentItems) {
-      console.log("No content items found in this module");
-      return next(
-        new ErrorHandler("No content items found in this module", 404)
-      );
-    }
-
-    const contentIndex = module.contentItems.findIndex(
-      (item) => item._id.toString() === contentId
+    // Find and remove video
+    const videoIndex = module.videos.findIndex(
+      (video) => video._id.toString() === videoId
     );
 
-    if (contentIndex === -1) {
-      console.log(`Content item not found: ${contentId}`);
-      return next(new ErrorHandler("Content item not found", 404));
+    if (videoIndex === -1) {
+      return next(new ErrorHandler("Video not found", 404));
     }
 
-    const contentItem = module.contentItems[contentIndex];
+    const video = module.videos[videoIndex];
 
-    // Update basic fields
-    if (title) contentItem.title = title;
-    if (description !== undefined) contentItem.description = description;
-
-    // Update specific fields based on content type
-    switch (contentItem.type) {
-      case "file":
-        // Handle file replacement if new file is uploaded
-        if (req.files && req.files.file) {
-          try {
-            const allowedTypes = [
-              "application/pdf",
-              "application/vnd.ms-powerpoint",
-              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-              "application/msword",
-              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-              "image/jpeg",
-              "image/png",
-              "image/gif",
-            ];
-
-            const { filesArray, uploadedFiles } = await handleFileUploads(
-              req.files.file,
-              allowedTypes,
-              "syllabus-files",
-              next
-            );
-
-            const file = filesArray[0];
-            const uploadedFile = uploadedFiles[0];
-
-            // Delete old file from Azure if it exists
-            if (contentItem.fileKey) {
-              try {
-                console.log(`Deleting file from Azure: ${contentItem.fileKey}`);
-                await deleteFileFromAzure(contentItem.fileKey);
-                console.log("Old file deleted from Azure");
-              } catch (azureError) {
-                console.error("Error deleting file from Azure:", azureError);
-                // Continue with update even if Azure deletion fails
-              }
-            }
-
-            // Determine file type
-            let fileType = "other";
-            if (file.mimetype === "application/pdf") {
-              fileType = "pdf";
-            } else if (
-              file.mimetype === "application/vnd.ms-powerpoint" ||
-              file.mimetype ===
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-            ) {
-              fileType = "presentation";
-            } else if (
-              file.mimetype === "application/msword" ||
-              file.mimetype ===
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ) {
-              fileType = "document";
-            } else if (file.mimetype.startsWith("image/")) {
-              fileType = "image";
-            }
-
-            // Update file properties
-            contentItem.fileType = fileType;
-            contentItem.fileName = file.name;
-            contentItem.fileUrl = uploadedFile.url;
-            contentItem.fileKey = uploadedFile.key;
-          } catch (uploadError) {
-            console.error("Error handling file upload:", uploadError);
-            return next(
-              new ErrorHandler(
-                uploadError.message || "Failed to upload file",
-                uploadError.statusCode || 500
-              )
-            );
-          }
-        }
-        break;
-
-      case "link":
-        // Update link URL
-        const { url } = req.body;
-        if (url) {
-          contentItem.url = url;
-        }
-        break;
-
-      case "video":
-        // Update video details
-        const { videoUrl, videoProvider } = req.body;
-        if (videoUrl) {
-          contentItem.videoUrl = videoUrl;
-        }
-        if (videoProvider) {
-          contentItem.videoProvider = videoProvider;
-        }
-
-        // If video file is uploaded instead of URL
-        if (req.files && req.files.videoFile) {
-          try {
-            const allowedTypes = ["video/mp4", "video/webm", "video/ogg"];
-
-            const { filesArray, uploadedFiles } = await handleFileUploads(
-              req.files.videoFile,
-              allowedTypes,
-              "syllabus-videos",
-              next
-            );
-
-            const uploadedFile = uploadedFiles[0];
-
-            // Delete old video from Azure if it exists
-            if (contentItem.videoKey) {
-              try {
-                console.log(
-                  `Deleting video from Azure: ${contentItem.videoKey}`
-                );
-                await deleteFileFromAzure(contentItem.videoKey);
-                console.log("Old video deleted from Azure");
-              } catch (azureError) {
-                console.error("Error deleting video from Azure:", azureError);
-                // Continue with update even if Azure deletion fails
-              }
-            }
-
-            // Override videoUrl with the uploaded file URL
-            contentItem.videoUrl = uploadedFile.url;
-            contentItem.videoKey = uploadedFile.key;
-          } catch (uploadError) {
-            console.error("Error handling video upload:", uploadError);
-            return next(
-              new ErrorHandler(
-                uploadError.message || "Failed to upload video",
-                uploadError.statusCode || 500
-              )
-            );
-          }
-        }
-        break;
-
-      case "text":
-        // Update text content
-        const { content } = req.body;
-        if (content) {
-          contentItem.content = content;
-        }
-        break;
+    // Delete files from Azure
+    try {
+      if (video.fileKey) {
+        await deleteFileFromAzure(video.fileKey);
+      }
+      if (video.thumbnail.thumbnailKey) {
+        await deleteFileFromAzure(video.thumbnail.thumbnailKey);
+      }
+    } catch (deleteError) {
+      console.error("Error deleting files from Azure:", deleteError);
     }
 
-    // Update the item in the array
-    module.contentItems[contentIndex] = contentItem;
+    // Remove video from array
+    module.videos.splice(videoIndex, 1);
 
-    console.log("Saving updated syllabus");
     await syllabus.save({ session });
-    console.log("Syllabus updated with modified content item");
 
-    console.log("Committing transaction");
     await session.commitTransaction();
     transactionStarted = false;
-    console.log("Transaction committed");
 
     res.status(200).json({
       success: true,
-      message: "Content item updated successfully",
-      contentItem: module.contentItems[contentIndex],
+      message: "Video deleted successfully",
     });
   } catch (error) {
-    console.log(`Error in updateContentItem: ${error.message}`);
+    console.log(`Error in deleteVideoFromModule: ${error.message}`);
     if (transactionStarted) {
       try {
-        console.log("Aborting transaction");
         await session.abortTransaction();
-        console.log("Transaction aborted");
       } catch (abortError) {
         console.error("Error aborting transaction:", abortError);
       }
     }
     return next(new ErrorHandler(error.message, 500));
   } finally {
-    console.log("Ending session");
     await session.endSession();
-    console.log("Session ended");
   }
 });
 
-// Delete content item
-exports.deleteContentItem = catchAsyncErrors(async (req, res, next) => {
-  console.log("deleteContentItem: Started");
+// Similar delete functions for links, PDFs, and PPTs
+exports.deleteLinkFromModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("deleteLinkFromModule: Started");
   const session = await mongoose.startSession();
   let transactionStarted = false;
 
   try {
     await session.startTransaction();
     transactionStarted = true;
-    console.log("Transaction started");
 
-    const { courseId, moduleId, contentId } = req.params;
+    const { courseId, moduleId, linkId } = req.params;
 
-    console.log(
-      `Deleting content ${contentId} from module ${moduleId} for course: ${courseId}`
-    );
-
-    // Check if teacher is authorized to modify this course
+    // Check authorization
     const teacher = await Teacher.findOne({ user: req.user.id });
     if (!teacher) {
-      console.log("Teacher not found");
       return next(new ErrorHandler("Teacher not found", 404));
     }
 
@@ -733,98 +785,751 @@ exports.deleteContentItem = catchAsyncErrors(async (req, res, next) => {
     });
 
     if (!course) {
-      console.log("Course not found or teacher not authorized");
       return next(new ErrorHandler("Course not found or unauthorized", 404));
     }
 
-    // Find CourseSyllabus
+    // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
       session
     );
     if (!syllabus) {
-      console.log(`No syllabus found for course: ${courseId}`);
       return next(new ErrorHandler("No syllabus found for this course", 404));
     }
 
-    // Find specific module
     const module = syllabus.modules.id(moduleId);
     if (!module) {
-      console.log(`Module not found: ${moduleId}`);
       return next(new ErrorHandler("Module not found", 404));
     }
 
-    // Find the content item
-    if (!module.contentItems) {
-      console.log("No content items found in this module");
-      return next(
-        new ErrorHandler("No content items found in this module", 404)
-      );
-    }
-
-    const contentIndex = module.contentItems.findIndex(
-      (item) => item._id.toString() === contentId
+    // Find and remove link
+    const linkIndex = module.links.findIndex(
+      (link) => link._id.toString() === linkId
     );
 
-    if (contentIndex === -1) {
-      console.log(`Content item not found: ${contentId}`);
-      return next(new ErrorHandler("Content item not found", 404));
+    if (linkIndex === -1) {
+      return next(new ErrorHandler("Link not found", 404));
     }
 
-    const contentItem = module.contentItems[contentIndex];
+    const link = module.links[linkIndex];
 
-    // Delete file from Azure if it's a file or video
-    if (
-      (contentItem.type === "file" && contentItem.fileKey) ||
-      (contentItem.type === "video" && contentItem.videoKey)
-    ) {
-      const fileKey = contentItem.fileKey || contentItem.videoKey;
-      try {
-        console.log(`Deleting file from Azure: ${fileKey}`);
-        await deleteFileFromAzure(fileKey);
-        console.log("File deleted from Azure");
-      } catch (azureError) {
-        console.error("Error deleting file from Azure:", azureError);
-        // Continue with the database deletion even if Azure deletion fails
+    // Delete thumbnail from Azure if exists
+    try {
+      if (link.thumbnail.thumbnailKey) {
+        await deleteFileFromAzure(link.thumbnail.thumbnailKey);
       }
+    } catch (deleteError) {
+      console.error("Error deleting thumbnail from Azure:", deleteError);
     }
 
-    // Remove content item from module
-    module.contentItems.splice(contentIndex, 1);
+    // Remove link from array
+    module.links.splice(linkIndex, 1);
 
-    console.log("Saving updated syllabus");
     await syllabus.save({ session });
-    console.log("Content item removed from module");
 
-    console.log("Committing transaction");
     await session.commitTransaction();
     transactionStarted = false;
-    console.log("Transaction committed");
 
     res.status(200).json({
       success: true,
-      message: "Content item deleted successfully",
-      courseId: courseId,
-      moduleId: moduleId,
-      contentId: contentId,
+      message: "Link deleted successfully",
     });
   } catch (error) {
-    console.log(`Error in deleteContentItem: ${error.message}`);
-
+    console.log(`Error in deleteLinkFromModule: ${error.message}`);
     if (transactionStarted) {
       try {
-        console.log("Aborting transaction");
         await session.abortTransaction();
-        console.log("Transaction aborted");
       } catch (abortError) {
         console.error("Error aborting transaction:", abortError);
       }
     }
-
     return next(new ErrorHandler(error.message, 500));
   } finally {
-    console.log("Ending session");
     await session.endSession();
-    console.log("Session ended");
+  }
+});
+
+// Delete PDF from module
+exports.deletePdfFromModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("deletePdfFromModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId, pdfId } = req.params;
+
+    // Check authorization
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Find and remove PDF
+    const pdfIndex = module.pdfs.findIndex(
+      (pdf) => pdf._id.toString() === pdfId
+    );
+
+    if (pdfIndex === -1) {
+      return next(new ErrorHandler("PDF not found", 404));
+    }
+
+    const pdf = module.pdfs[pdfIndex];
+
+    // Delete files from Azure
+    try {
+      if (pdf.fileKey) {
+        await deleteFileFromAzure(pdf.fileKey);
+      }
+      if (pdf.thumbnail.thumbnailKey) {
+        await deleteFileFromAzure(pdf.thumbnail.thumbnailKey);
+      }
+    } catch (deleteError) {
+      console.error("Error deleting files from Azure:", deleteError);
+    }
+
+    // Remove PDF from array
+    module.pdfs.splice(pdfIndex, 1);
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(200).json({
+      success: true,
+      message: "PDF deleted successfully",
+    });
+  } catch (error) {
+    console.log(`Error in deletePdfFromModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Delete PPT from module
+exports.deletePptFromModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("deletePptFromModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId, pptId } = req.params;
+
+    // Check authorization
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Find and remove PPT
+    const pptIndex = module.ppts.findIndex(
+      (ppt) => ppt._id.toString() === pptId
+    );
+
+    if (pptIndex === -1) {
+      return next(new ErrorHandler("PPT not found", 404));
+    }
+
+    const ppt = module.ppts[pptIndex];
+
+    // Delete files from Azure
+    try {
+      if (ppt.fileKey) {
+        await deleteFileFromAzure(ppt.fileKey);
+      }
+      if (ppt.thumbnail.thumbnailKey) {
+        await deleteFileFromAzure(ppt.thumbnail.thumbnailKey);
+      }
+    } catch (deleteError) {
+      console.error("Error deleting files from Azure:", deleteError);
+    }
+
+    // Remove PPT from array
+    module.ppts.splice(pptIndex, 1);
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(200).json({
+      success: true,
+      message: "PPT deleted successfully",
+    });
+  } catch (error) {
+    console.log(`Error in deletePptFromModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Update video in module
+exports.updateVideoInModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("updateVideoInModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId, videoId } = req.params;
+    const { name, description, isActive } = req.body;
+
+    // Check authorization
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Find video
+    const video = module.videos.id(videoId);
+    if (!video) {
+      return next(new ErrorHandler("Video not found", 404));
+    }
+
+    // Update video details
+    if (name) video.name = name;
+    if (description !== undefined) video.description = description;
+    if (isActive !== undefined) video.isActive = isActive;
+
+    // Handle new video file if provided
+    if (req.files && req.files.video) {
+      const allowedVideoTypes = [
+        "video/mp4",
+        "video/webm",
+        "video/avi",
+        "video/mov",
+      ];
+      const { uploadedFiles } = await handleFileUploads(
+        req.files.video,
+        allowedVideoTypes,
+        `syllabus-videos/course-${courseId}/module-${moduleId}`,
+        next
+      );
+
+      // Delete old video file
+      if (video.fileKey) {
+        try {
+          await deleteFileFromAzure(video.fileKey);
+        } catch (deleteError) {
+          console.error("Error deleting old video:", deleteError);
+        }
+      }
+
+      // Update with new video
+      video.fileUrl = uploadedFiles[0].url;
+      video.fileKey = uploadedFiles[0].key;
+    }
+
+    // Handle new thumbnail if provided
+    if (req.files && req.files.thumbnail) {
+      const allowedImageTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "image/gif",
+      ];
+      const { uploadedFiles: thumbnailFiles } = await handleFileUploads(
+        req.files.thumbnail,
+        allowedImageTypes,
+        `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
+        next
+      );
+
+      // Delete old thumbnail
+      if (video.thumbnail.thumbnailKey) {
+        try {
+          await deleteFileFromAzure(video.thumbnail.thumbnailKey);
+        } catch (deleteError) {
+          console.error("Error deleting old thumbnail:", deleteError);
+        }
+      }
+
+      // Update with new thumbnail
+      video.thumbnail.thumbnailUrl = thumbnailFiles[0].url;
+      video.thumbnail.thumbnailKey = thumbnailFiles[0].key;
+    }
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(200).json({
+      success: true,
+      message: "Video updated successfully",
+      video,
+    });
+  } catch (error) {
+    console.log(`Error in updateVideoInModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Update link in module
+exports.updateLinkInModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("updateLinkInModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId, linkId } = req.params;
+    const { name, description, fileUrl, isActive } = req.body;
+
+    // Check authorization
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Find link
+    const link = module.links.id(linkId);
+    if (!link) {
+      return next(new ErrorHandler("Link not found", 404));
+    }
+
+    // Update link details
+    if (name) link.name = name;
+    if (description !== undefined) link.description = description;
+    if (fileUrl) link.fileUrl = fileUrl;
+    if (isActive !== undefined) link.isActive = isActive;
+
+    // Handle new thumbnail if provided
+    if (req.files && req.files.thumbnail) {
+      const allowedImageTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "image/gif",
+      ];
+      const { uploadedFiles: thumbnailFiles } = await handleFileUploads(
+        req.files.thumbnail,
+        allowedImageTypes,
+        `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
+        next
+      );
+
+      // Delete old thumbnail
+      if (link.thumbnail.thumbnailKey) {
+        try {
+          await deleteFileFromAzure(link.thumbnail.thumbnailKey);
+        } catch (deleteError) {
+          console.error("Error deleting old thumbnail:", deleteError);
+        }
+      }
+
+      // Update with new thumbnail
+      link.thumbnail.thumbnailUrl = thumbnailFiles[0].url;
+      link.thumbnail.thumbnailKey = thumbnailFiles[0].key;
+    }
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(200).json({
+      success: true,
+      message: "Link updated successfully",
+      link,
+    });
+  } catch (error) {
+    console.log(`Error in updateLinkInModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Update PDF in module
+exports.updatePdfInModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("updatePdfInModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId, pdfId } = req.params;
+    const { name, description, isActive } = req.body;
+
+    // Check authorization
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Find PDF
+    const pdf = module.pdfs.id(pdfId);
+    if (!pdf) {
+      return next(new ErrorHandler("PDF not found", 404));
+    }
+
+    // Update PDF details
+    if (name) pdf.name = name;
+    if (description !== undefined) pdf.description = description;
+    if (isActive !== undefined) pdf.isActive = isActive;
+
+    // Handle new PDF file if provided
+    if (req.files && req.files.pdf) {
+      const allowedPdfTypes = ["application/pdf"];
+      const { uploadedFiles } = await handleFileUploads(
+        req.files.pdf,
+        allowedPdfTypes,
+        `syllabus-pdfs/course-${courseId}/module-${moduleId}`,
+        next
+      );
+
+      // Delete old PDF file
+      if (pdf.fileKey) {
+        try {
+          await deleteFileFromAzure(pdf.fileKey);
+        } catch (deleteError) {
+          console.error("Error deleting old PDF:", deleteError);
+        }
+      }
+
+      // Update with new PDF
+      pdf.fileUrl = uploadedFiles[0].url;
+      pdf.fileKey = uploadedFiles[0].key;
+    }
+
+    // Handle new thumbnail if provided
+    if (req.files && req.files.thumbnail) {
+      const allowedImageTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "image/gif",
+      ];
+      const { uploadedFiles: thumbnailFiles } = await handleFileUploads(
+        req.files.thumbnail,
+        allowedImageTypes,
+        `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
+        next
+      );
+
+      // Delete old thumbnail
+      if (pdf.thumbnail.thumbnailKey) {
+        try {
+          await deleteFileFromAzure(pdf.thumbnail.thumbnailKey);
+        } catch (deleteError) {
+          console.error("Error deleting old thumbnail:", deleteError);
+        }
+      }
+
+      // Update with new thumbnail
+      pdf.thumbnail.thumbnailUrl = thumbnailFiles[0].url;
+      pdf.thumbnail.thumbnailKey = thumbnailFiles[0].key;
+    }
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(200).json({
+      success: true,
+      message: "PDF updated successfully",
+      pdf,
+    });
+  } catch (error) {
+    console.log(`Error in updatePdfInModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Update PPT in module
+exports.updatePptInModule = catchAsyncErrors(async (req, res, next) => {
+  console.log("updatePptInModule: Started");
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    await session.startTransaction();
+    transactionStarted = true;
+
+    const { courseId, moduleId, pptId } = req.params;
+    const { name, description, isActive } = req.body;
+
+    // Check authorization
+    const teacher = await Teacher.findOne({ user: req.user.id });
+    if (!teacher) {
+      return next(new ErrorHandler("Teacher not found", 404));
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      teacher: teacher._id,
+    });
+
+    if (!course) {
+      return next(new ErrorHandler("Course not found or unauthorized", 404));
+    }
+
+    // Find syllabus and module
+    const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
+      session
+    );
+    if (!syllabus) {
+      return next(new ErrorHandler("No syllabus found for this course", 404));
+    }
+
+    const module = syllabus.modules.id(moduleId);
+    if (!module) {
+      return next(new ErrorHandler("Module not found", 404));
+    }
+
+    // Find PPT
+    const ppt = module.ppts.id(pptId);
+    if (!ppt) {
+      return next(new ErrorHandler("PPT not found", 404));
+    }
+
+    // Update PPT details
+    if (name) ppt.name = name;
+    if (description !== undefined) ppt.description = description;
+    if (isActive !== undefined) ppt.isActive = isActive;
+
+    // Handle new PPT file if provided
+    if (req.files && req.files.ppt) {
+      const allowedPptTypes = [
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ];
+      const { uploadedFiles } = await handleFileUploads(
+        req.files.ppt,
+        allowedPptTypes,
+        `syllabus-ppts/course-${courseId}/module-${moduleId}`,
+        next
+      );
+
+      // Delete old PPT file
+      if (ppt.fileKey) {
+        try {
+          await deleteFileFromAzure(ppt.fileKey);
+        } catch (deleteError) {
+          console.error("Error deleting old PPT:", deleteError);
+        }
+      }
+
+      // Update with new PPT
+      ppt.fileUrl = uploadedFiles[0].url;
+      ppt.fileKey = uploadedFiles[0].key;
+    }
+
+    // Handle new thumbnail if provided
+    if (req.files && req.files.thumbnail) {
+      const allowedImageTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg",
+        "image/gif",
+      ];
+      const { uploadedFiles: thumbnailFiles } = await handleFileUploads(
+        req.files.thumbnail,
+        allowedImageTypes,
+        `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
+        next
+      );
+
+      // Delete old thumbnail
+      if (ppt.thumbnail.thumbnailKey) {
+        try {
+          await deleteFileFromAzure(ppt.thumbnail.thumbnailKey);
+        } catch (deleteError) {
+          console.error("Error deleting old thumbnail:", deleteError);
+        }
+      }
+
+      // Update with new thumbnail
+      ppt.thumbnail.thumbnailUrl = thumbnailFiles[0].url;
+      ppt.thumbnail.thumbnailKey = thumbnailFiles[0].key;
+    }
+
+    await syllabus.save({ session });
+
+    await session.commitTransaction();
+    transactionStarted = false;
+
+    res.status(200).json({
+      success: true,
+      message: "PPT updated successfully",
+      ppt,
+    });
+  } catch (error) {
+    console.log(`Error in updatePptInModule: ${error.message}`);
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error("Error aborting transaction:", abortError);
+      }
+    }
+    return next(new ErrorHandler(error.message, 500));
+  } finally {
+    await session.endSession();
   }
 });
 
