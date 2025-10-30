@@ -15,11 +15,12 @@ const courseSchema = new mongoose.Schema(
       ref: "Semester",
       required: true,
     },
-    teacher: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Teacher",
-      required: true,
-    },
+    teachers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Teacher",
+      },
+    ],
     // Removed lectures array as lectures are now in syllabus modules
 
     // References to other models
@@ -59,11 +60,11 @@ const courseSchema = new mongoose.Schema(
       default: true,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Index for efficient queries
-courseSchema.index({ teacher: 1, isActive: 1 });
+courseSchema.index({ teachers: 1, isActive: 1 });
 courseSchema.index({ semester: 1, isActive: 1 });
 
 module.exports = mongoose.model("Course", courseSchema);
