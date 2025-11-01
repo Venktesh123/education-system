@@ -278,14 +278,12 @@ exports.updateAnnouncement = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("Teacher not found", 404));
     }
 
-    // Check if the teacher is the publisher or owns the course
+    // Check if the teacher is one of the course's teachers
     const course = await Course.findById(courseId).session(session);
-    if (!course || course.teacher.toString() !== teacher._id.toString()) {
+    if (!course || !course.teachers.some((t) => t.equals(teacher._id))) {
       console.log("Unauthorized - Teacher does not own this course");
       return next(new ErrorHandler("Unauthorized", 403));
     }
-
-    // Update announcement details
     if (title) announcement.title = title;
     if (content) announcement.content = content;
     if (publishDate) announcement.publishDate = publishDate;
@@ -447,9 +445,9 @@ exports.deleteAnnouncement = catchAsyncErrors(async (req, res, next) => {
       return next(new ErrorHandler("Teacher not found", 404));
     }
 
-    // Check if the teacher is the publisher or owns the course
+    // Check if the teacher is one of the course's teachers
     const course = await Course.findById(courseId).session(session);
-    if (!course || course.teacher.toString() !== teacher._id.toString()) {
+    if (!course || !course.teachers.some((t) => t.equals(teacher._id))) {
       console.log("Unauthorized - Teacher does not own this course");
       return next(new ErrorHandler("Unauthorized", 403));
     }

@@ -110,7 +110,7 @@ const createLectureForModule = async function (req, res) {
     // Verify course ownership (outside transaction)
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -441,7 +441,7 @@ const getModuleLectures = async function (req, res) {
 
       const course = await Course.findOne({
         _id: courseId,
-        teacher: teacher._id,
+        teachers: teacher._id,
       });
 
       if (!course) {
@@ -524,7 +524,7 @@ const getCourseModulesWithLectures = async function (req, res) {
 
       const course = await Course.findOne({
         _id: courseId,
-        teacher: teacher._id,
+        teachers: teacher._id,
       });
 
       if (!course) {
@@ -635,7 +635,7 @@ const updateLecture = async function (req, res) {
     // Verify teacher has access to this course
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -782,7 +782,7 @@ const deleteLecture = async function (req, res) {
     // Verify course ownership
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -897,7 +897,7 @@ const getLectureById = async function (req, res) {
 
       const course = await Course.findOne({
         _id: courseId,
-        teacher: teacher._id,
+        teachers: teacher._id,
       });
 
       if (!course) {
@@ -957,7 +957,7 @@ const updateLectureOrder = async function (req, res) {
     // Verify course ownership
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {

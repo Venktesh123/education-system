@@ -110,13 +110,13 @@ const formatCourseData = async (course) => {
       .map((module) => {
         const moduleLectures = updatedLectures.filter(
           (lecture) =>
-            lecture.syllabusModule.toString() === module._id.toString()
+            lecture.syllabusModule.toString() === module._id.toString(),
         );
 
         // Calculate module completion status
         const totalLectures = moduleLectures.length;
         const reviewedLectures = moduleLectures.filter(
-          (lecture) => lecture.isReviewed
+          (lecture) => lecture.isReviewed,
         ).length;
         const completionPercentage =
           totalLectures > 0
@@ -153,12 +153,12 @@ const formatCourseData = async (course) => {
   // Calculate total lecture count and overall completion
   const totalLectureCount = modulesWithLectures.reduce(
     (total, module) => total + module.lectureCount,
-    0
+    0,
   );
 
   const totalReviewedCount = modulesWithLectures.reduce(
     (total, module) => total + module.reviewedLectureCount,
-    0
+    0,
   );
 
   const overallCompletion =
@@ -171,7 +171,7 @@ const formatCourseData = async (course) => {
     title: course.title,
     aboutCourse: course.aboutCourse,
     semester: course.semester,
-    teacher: course.teacher,
+    teachers: course.teachers,
     creditPoints: course.creditPoints
       ? {
           lecture: course.creditPoints.lecture,
@@ -234,7 +234,7 @@ const formatCourseData = async (course) => {
 const getCourseById = async function (req, res) {
   try {
     logger.info(
-      `Fetching course ID: ${req.params.courseId} for user: ${req.user.id}`
+      `Fetching course ID: ${req.params.courseId} for user: ${req.user.id}`,
     );
 
     // Determine if the user is a teacher or student
@@ -242,8 +242,12 @@ const getCourseById = async function (req, res) {
     let course,
       students = [];
 
-    // Find the course
+    // Find the course and populate all necessary fields, including the new teachers field
     const courseQuery = Course.findById(req.params.courseId)
+      .populate({
+        path: "teachers",
+        populate: { path: "user", select: "name email" },
+      })
       .populate("semester")
       .populate("outcomes")
       .populate("schedule")
@@ -265,40 +269,38 @@ const getCourseById = async function (req, res) {
     let userDetails = null;
 
     if (userRole === "teacher") {
-      // For teacher: check if they're the course teacher
-      const teacher = await Teacher.findOne({
-        user: req.user.id,
-        _id: course.teacher,
-      }).populate({
-        path: "user",
-        select: "name email role",
-      });
-
+      const teacher = await Teacher.findOne({ user: req.user.id });
       if (teacher) {
-        hasAccess = true;
-        userDetails = {
-          id: teacher._id,
-          name: teacher.user?.name,
-          email: teacher.email,
-        };
+        // Check if the teacher is in the course's teachers list
+        const isAssigned = course.teachers.some((t) =>
+          t._id.equals(teacher._id),
+        );
+        if (isAssigned) {
+          hasAccess = true;
+          userDetails = {
+            id: teacher._id,
+            name: teacher.user?.name,
+            email: teacher.email,
+          };
 
-        // Get students for this course
-        await teacher.populate({
-          path: "students",
-          populate: {
+          // Get all students for all teachers of this course
+          const teacherIds = course.teachers.map((t) => t._id);
+          const courseStudents = await Student.find({
+            teacher: { $in: teacherIds },
+          }).populate({
             path: "user",
             select: "name email",
-          },
-        });
+          });
 
-        students =
-          teacher.students?.map((student, index) => ({
-            id: student._id.toString(),
-            rollNo: `CS${String(index + 101).padStart(3, "0")}`,
-            name: student.user?.name || "Unknown",
-            program: "Computer Science",
-            email: student.user?.email || "",
-          })) || [];
+          students =
+            courseStudents.map((student, index) => ({
+              id: student._id.toString(),
+              rollNo: `CS${String(index + 101).padStart(3, "0")}`,
+              name: student.user?.name || "Unknown",
+              program: "Computer Science",
+              email: student.user?.email || "",
+            })) || [];
+        }
       }
     } else if (userRole === "student") {
       // For student: check if they're enrolled in the course
@@ -310,9 +312,8 @@ const getCourseById = async function (req, res) {
       if (student) {
         // Check if student is enrolled in this course
         const isEnrolled = student.courses.some(
-          (id) => id.toString() === req.params.courseId
+          (id) => id.toString() === req.params.courseId,
         );
-
         if (isEnrolled) {
           hasAccess = true;
           userDetails = {
@@ -326,7 +327,7 @@ const getCourseById = async function (req, res) {
 
     if (!hasAccess) {
       logger.error(
-        `User ${req.user.id} does not have access to course ${req.params.courseId}`
+        `User ${req.user.id} does not have access to course ${req.params.courseId}`,
       );
       return res
         .status(403)
@@ -354,35 +355,24 @@ const getCourseById = async function (req, res) {
       totalReviewedCount: formattedCourse.totalReviewedCount,
       overallCompletion: formattedCourse.overallCompletion,
       attendance: formattedCourse.attendance,
+      // Replace single teacher with array of teachers
+      teachers: course.teachers.map((t) => ({
+        id: t._id,
+        name: t.user?.name,
+        email: t.user?.email,
+      })),
     };
 
     // Add user-specific data
     if (userRole === "teacher") {
-      response.teacher = {
-        id: userDetails.id,
-        name: userDetails.name,
-        email: userDetails.email,
-        totalStudents: students.length,
-      };
       response.students = students;
+      response.totalStudents = students.length;
     } else if (userRole === "student") {
       response.student = {
         id: userDetails.id,
         name: userDetails.name,
         email: userDetails.email,
       };
-      // Include teacher info for students as well
-      const courseTeacher = await Teacher.findById(course.teacher).populate(
-        "user",
-        "name email"
-      );
-      if (courseTeacher) {
-        response.teacher = {
-          id: courseTeacher._id,
-          name: courseTeacher.user?.name,
-          email: courseTeacher.user?.email,
-        };
-      }
     }
 
     res.json(response);
@@ -396,7 +386,7 @@ const getCourseById = async function (req, res) {
 const getCourseModulesWithLectures = async function (req, res) {
   try {
     logger.info(
-      `Fetching modules with lectures for course ID: ${req.params.courseId}`
+      `Fetching modules with lectures for course ID: ${req.params.courseId}`,
     );
 
     const { courseId } = req.params;
@@ -410,7 +400,7 @@ const getCourseModulesWithLectures = async function (req, res) {
 
       const course = await Course.findOne({
         _id: courseId,
-        teacher: teacher._id,
+        teachers: teacher._id,
       });
 
       if (!course) {
@@ -462,12 +452,12 @@ const getCourseModulesWithLectures = async function (req, res) {
       .map((module) => {
         const moduleLectures = lectures.filter(
           (lecture) =>
-            lecture.syllabusModule.toString() === module._id.toString()
+            lecture.syllabusModule.toString() === module._id.toString(),
         );
 
         const totalLectures = moduleLectures.length;
         const reviewedLectures = moduleLectures.filter(
-          (lecture) => lecture.isReviewed
+          (lecture) => lecture.isReviewed,
         ).length;
         const completionPercentage =
           totalLectures > 0
@@ -504,7 +494,7 @@ const getCourseModulesWithLectures = async function (req, res) {
 const getEnrolledCourses = async function (req, res) {
   try {
     logger.info(
-      `Fetching enrolled courses for student with ID: ${req.user.id}`
+      `Fetching enrolled courses for student with ID: ${req.user.id}`,
     );
 
     // Verify user is a student
@@ -571,11 +561,11 @@ const getEnrolledCourses = async function (req, res) {
             : null,
           lectureCount,
         };
-      })
+      }),
     );
 
     logger.info(
-      `Found ${courses.length} enrolled courses for student: ${student._id}`
+      `Found ${courses.length} enrolled courses for student: ${student._id}`,
     );
 
     res.json({
@@ -612,24 +602,24 @@ const getUserCourses = async function (req, res) {
       }
 
       // Find courses taught by this teacher
-      const courses = await Course.find({ teacher: teacher._id })
+      const courses = await Course.find({ teachers: teacher._id })
         .select(
-          "_id title aboutCourse assignments attendance schedule semester"
+          "_id title aboutCourse assignments attendance schedule semester",
         )
         .populate(
           "assignments",
-          "_id title description dueDate totalPoints isActive submissions"
+          "_id title description dueDate totalPoints isActive submissions",
         )
         .populate("attendance", "sessions")
         .populate(
           "schedule",
-          "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes"
+          "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes",
         )
         .populate("semester", "_id name startDate endDate")
         .sort({ createdAt: -1 });
 
       logger.info(
-        `Found ${courses.length} courses for teacher: ${teacher._id}`
+        `Found ${courses.length} courses for teacher: ${teacher._id}`,
       );
 
       const coursesWithAdditionalData = await Promise.all(
@@ -685,7 +675,7 @@ const getUserCourses = async function (req, res) {
               ? Object.fromEntries(course.attendance.sessions)
               : {},
           };
-        })
+        }),
       );
 
       res.json({
@@ -728,11 +718,11 @@ const getUserCourses = async function (req, res) {
 
       const courses = await Course.find({ _id: { $in: courseIds } })
         .select(
-          "_id title aboutCourse assignments attendance schedule semester"
+          "_id title aboutCourse assignments attendance schedule semester",
         )
         .populate(
           "assignments",
-          "_id title description dueDate totalPoints isActive submissions"
+          "_id title description dueDate totalPoints isActive submissions",
         )
         .populate({
           path: "assignments.submissions",
@@ -743,13 +733,13 @@ const getUserCourses = async function (req, res) {
         .populate("attendance", "sessions")
         .populate(
           "schedule",
-          "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes"
+          "classStartDate classEndDate midSemesterExamDate endSemesterExamDate classDaysAndTimes",
         )
         .populate("semester", "_id name startDate endDate")
         .sort({ createdAt: -1 });
 
       logger.info(
-        `Found ${courses.length} courses for student: ${student._id}`
+        `Found ${courses.length} courses for student: ${student._id}`,
       );
 
       const coursesWithAdditionalData = await Promise.all(
@@ -805,7 +795,7 @@ const getUserCourses = async function (req, res) {
               ? Object.fromEntries(course.attendance.sessions)
               : {},
           };
-        })
+        }),
       );
 
       res.json({
@@ -827,7 +817,7 @@ const getUserCourses = async function (req, res) {
   }
 };
 
-// Create new course (keeping existing logic, removing old lecture handling)
+// Create new course
 const createCourse = async function (req, res) {
   logger.info("Starting createCourse controller function");
 
@@ -835,45 +825,39 @@ const createCourse = async function (req, res) {
   let transactionStarted = false;
 
   try {
-    logger.info("Attempting to start transaction");
-    await session.startTransaction();
-    transactionStarted = true;
-    logger.info("Transaction started successfully");
+    const { title, aboutCourse, semester, teacher: teacherIds } = req.body;
 
-    // Find teacher using the logged-in user ID
-    const teacher = await Teacher.findOne({ user: req.user.id }).session(
-      session
-    );
-
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      throw new Error("Teacher not found");
+    if (!teacherIds || !Array.isArray(teacherIds) || teacherIds.length === 0) {
+      throw new Error("At least one teacher must be assigned to the course.");
     }
 
-    // Create main course (remove old lecture handling)
+    // Verify that all teacherIds should be valid
+    const teachers = await Teacher.find({ _id: { $in: teacherIds } });
+    if (teachers.length !== teacherIds.length) {
+      throw new Error("One or more teacher IDs are invalid.");
+    }
+
+    // Create main course
     const courseData = {
-      title: req.body.title,
-      aboutCourse: req.body.aboutCourse,
-      semester: req.body.semester,
-      teacher: teacher._id,
+      title: title,
+      aboutCourse: aboutCourse,
+      semester: semester,
+      teachers: teacherIds,
     };
 
     const course = new Course(courseData);
-    await course.save({ session });
+    await course.save();
     logger.info(`Main course created with ID: ${course._id}`);
 
     // Create learning outcomes
     if (req.body.learningOutcomes && req.body.learningOutcomes.length > 0) {
       logger.info("Creating learning outcomes");
-      const outcome = await CourseOutcome.create(
-        [
-          {
-            outcomes: req.body.learningOutcomes,
-            course: course._id,
-          },
-        ],
-        { session }
-      );
+      const outcome = await CourseOutcome.create([
+        {
+          outcomes: req.body.learningOutcomes,
+          course: course._id,
+        },
+      ]);
       course.outcomes = outcome[0]._id;
       logger.info(`Learning outcomes created with ID: ${outcome[0]._id}`);
     }
@@ -885,7 +869,7 @@ const createCourse = async function (req, res) {
         ...req.body.courseSchedule,
         course: course._id,
       };
-      const schedule = await CourseSchedule.create([scheduleData], { session });
+      const schedule = await CourseSchedule.create([scheduleData]);
       course.schedule = schedule[0]._id;
       logger.info(`Course schedule created with ID: ${schedule[0]._id}`);
     }
@@ -893,19 +877,16 @@ const createCourse = async function (req, res) {
     // Create syllabus
     if (req.body.syllabus && req.body.syllabus.length > 0) {
       logger.info("Creating course syllabus");
-      const syllabus = await CourseSyllabus.create(
-        [
-          {
-            modules: req.body.syllabus.map((module, index) => ({
-              ...module,
-              order: index + 1,
-              lectures: [], // Initialize empty lectures array
-            })),
-            course: course._id,
-          },
-        ],
-        { session }
-      );
+      const syllabus = await CourseSyllabus.create([
+        {
+          modules: req.body.syllabus.map((module, index) => ({
+            ...module,
+            order: index + 1,
+            lectures: [], // Initialize empty lectures array
+          })),
+          course: course._id,
+        },
+      ]);
       course.syllabus = syllabus[0]._id;
       logger.info(`Course syllabus created with ID: ${syllabus[0]._id}`);
     }
@@ -913,15 +894,12 @@ const createCourse = async function (req, res) {
     // Create weekly plan
     if (req.body.weeklyPlan && req.body.weeklyPlan.length > 0) {
       logger.info("Creating weekly plan");
-      const weeklyPlan = await WeeklyPlan.create(
-        [
-          {
-            weeks: req.body.weeklyPlan,
-            course: course._id,
-          },
-        ],
-        { session }
-      );
+      const weeklyPlan = await WeeklyPlan.create([
+        {
+          weeks: req.body.weeklyPlan,
+          course: course._id,
+        },
+      ]);
       course.weeklyPlan = weeklyPlan[0]._id;
       logger.info(`Weekly plan created with ID: ${weeklyPlan[0]._id}`);
     }
@@ -929,15 +907,12 @@ const createCourse = async function (req, res) {
     // Create credit points
     if (req.body.creditPoints) {
       logger.info("Creating credit points");
-      const creditPoints = await CreditPoints.create(
-        [
-          {
-            ...req.body.creditPoints,
-            course: course._id,
-          },
-        ],
-        { session }
-      );
+      const creditPoints = await CreditPoints.create([
+        {
+          ...req.body.creditPoints,
+          course: course._id,
+        },
+      ]);
       course.creditPoints = creditPoints[0]._id;
       logger.info(`Credit points created with ID: ${creditPoints[0]._id}`);
     }
@@ -946,33 +921,34 @@ const createCourse = async function (req, res) {
     if (req.body.attendance && req.body.attendance.sessions) {
       logger.info("Creating course attendance");
       const sessionsMap = new Map(Object.entries(req.body.attendance.sessions));
-      const attendance = await CourseAttendance.create(
-        [
-          {
-            sessions: sessionsMap,
-            course: course._id,
-          },
-        ],
-        { session }
-      );
+      const attendance = await CourseAttendance.create([
+        {
+          sessions: sessionsMap,
+          course: course._id,
+        },
+      ]);
       course.attendance = attendance[0]._id;
       logger.info(`Course attendance created with ID: ${attendance[0]._id}`);
     }
 
     // Save updated course with all references
     logger.info("Saving updated course with all references");
-    await course.save({ session });
+    await course.save();
 
     // Add course to teacher's courses array
     logger.info("Adding course to teacher's courses array");
-    teacher.courses.push(course._id);
-    await teacher.save({ session });
+    const teacherUpdatePromises = teachers.map((teacher) => {
+      teacher.courses.push(course._id);
+      return teacher.save();
+    });
+    await Promise.all(teacherUpdatePromises);
+    logger.info("Successfully updated teachers' courses.");
 
-    // Find all students under this teacher and add the course to their courses array
-    logger.info(`Finding students for teacher: ${teacher._id}`);
-    const students = await Student.find({ teacher: teacher._id }).session(
-      session
-    );
+    // Find all students associated with any of the the courses teachers
+    logger.info(`Finding students for teachers: ${teacherIds.join(", ")}`);
+    const students = await Student.find({
+      teacher: { $in: teacherIds },
+    });
 
     // Add course ID to all students' courses arrays
     if (students && students.length > 0) {
@@ -980,7 +956,7 @@ const createCourse = async function (req, res) {
       const updatePromises = students.map((student) => {
         if (!student.courses.includes(course._id)) {
           student.courses.push(course._id);
-          return student.save({ session });
+          return student.save();
         }
         return Promise.resolve();
       });
@@ -997,6 +973,7 @@ const createCourse = async function (req, res) {
     // Get the fully populated course
     logger.info("Fetching fully populated course");
     const courseQuery = Course.findById(course._id)
+      .populate("teachers")
       .populate("semester")
       .populate("outcomes")
       .populate("schedule")
@@ -1031,7 +1008,7 @@ const createCourse = async function (req, res) {
   }
 };
 
-// Update course (keeping existing logic, removing old lecture handling)
+// Update course
 const updateCourse = async function (req, res) {
   logger.info(`Updating course ID: ${req.params.courseId}`);
 
@@ -1043,39 +1020,75 @@ const updateCourse = async function (req, res) {
     transactionStarted = true;
     logger.info("Transaction started successfully");
 
-    const teacher = await Teacher.findOne({ user: req.user.id }).session(
-      session
-    );
-    if (!teacher) {
-      logger.error(`Teacher not found for user ID: ${req.user.id}`);
-      throw new Error("Teacher not found");
+    // Authorize user: check if the logged-in user is a teacher
+    const authorizedTeacher = await Teacher.findOne({
+      user: req.user.id,
+    }).session(session);
+    if (!authorizedTeacher) {
+      throw new Error("You are not authorized to perform this action.");
     }
 
+    // Find the course and verify the teacher is assigned to it
     const course = await Course.findOne({
       _id: req.params.courseId,
-      teacher: teacher._id,
+      teachers: authorizedTeacher._id,
     }).session(session);
 
     if (!course) {
-      logger.error(`Course not found with ID: ${req.params.courseId}`);
-      throw new Error("Course not found");
+      throw new Error(
+        "Course not found or you don't have permission to edit it.",
+      );
     }
 
-    // Update main course fields (remove lecture handling)
+    // Update main course fields
     if (req.body.title) course.title = req.body.title;
     if (req.body.aboutCourse) course.aboutCourse = req.body.aboutCourse;
     if (req.body.semester) course.semester = req.body.semester;
 
-    await course.save({ session });
-    logger.info("Updated main course fields");
+    // Handle updates to the list of teachers
+    if (req.body.teachers && Array.isArray(req.body.teachers)) {
+      const oldTeacherIds = course.teachers.map((id) => id.toString());
+      const newTeacherIds = req.body.teachers;
 
+      const addedTeacherIds = newTeacherIds.filter(
+        (id) => !oldTeacherIds.includes(id),
+      );
+      const removedTeacherIds = oldTeacherIds.filter(
+        (id) => !newTeacherIds.includes(id),
+      );
+
+      // Add course to newly assigned teachers' 'courses' array
+      if (addedTeacherIds.length > 0) {
+        await Teacher.updateMany(
+          { _id: { $in: addedTeacherIds } },
+          { $addToSet: { courses: course._id } },
+        ).session(session);
+        logger.info(`Added course to teachers: ${addedTeacherIds.join(", ")}`);
+      }
+
+      // Remove course from unassigned teachers' 'courses' array
+      if (removedTeacherIds.length > 0) {
+        await Teacher.updateMany(
+          { _id: { $in: removedTeacherIds } },
+          { $pull: { courses: course._id } },
+        ).session(session);
+        logger.info(
+          `Removed course from teachers: ${removedTeacherIds.join(", ")}`,
+        );
+      }
+
+      // Update the course's 'teachers' list
+      course.teachers = newTeacherIds;
+    }
+
+    // The rest of the update logic for sub-documents remains the same...
     // Update learning outcomes
     if (req.body.learningOutcomes) {
       if (course.outcomes) {
         await CourseOutcome.findByIdAndUpdate(
           course.outcomes,
           { outcomes: req.body.learningOutcomes },
-          { session }
+          { session },
         );
         logger.info(`Updated existing learning outcomes: ${course.outcomes}`);
       } else {
@@ -1086,7 +1099,7 @@ const updateCourse = async function (req, res) {
               course: course._id,
             },
           ],
-          { session }
+          { session },
         );
         course.outcomes = outcome[0]._id;
         await course.save({ session });
@@ -1100,7 +1113,7 @@ const updateCourse = async function (req, res) {
         await CourseSchedule.findByIdAndUpdate(
           course.schedule,
           req.body.courseSchedule,
-          { session }
+          { session },
         );
         logger.info(`Updated existing schedule: ${course.schedule}`);
       } else {
@@ -1111,7 +1124,7 @@ const updateCourse = async function (req, res) {
               course: course._id,
             },
           ],
-          { session }
+          { session },
         );
         course.schedule = schedule[0]._id;
         await course.save({ session });
@@ -1131,7 +1144,7 @@ const updateCourse = async function (req, res) {
               lectures: module.lectures || [], // Preserve existing lectures
             })),
           },
-          { session }
+          { session },
         );
         logger.info(`Updated existing syllabus: ${course.syllabus}`);
       } else {
@@ -1146,7 +1159,7 @@ const updateCourse = async function (req, res) {
               course: course._id,
             },
           ],
-          { session }
+          { session },
         );
         course.syllabus = syllabus[0]._id;
         await course.save({ session });
@@ -1160,7 +1173,7 @@ const updateCourse = async function (req, res) {
         await WeeklyPlan.findByIdAndUpdate(
           course.weeklyPlan,
           { weeks: req.body.weeklyPlan },
-          { session }
+          { session },
         );
         logger.info(`Updated existing weekly plan: ${course.weeklyPlan}`);
       } else {
@@ -1171,7 +1184,7 @@ const updateCourse = async function (req, res) {
               course: course._id,
             },
           ],
-          { session }
+          { session },
         );
         course.weeklyPlan = weeklyPlan[0]._id;
         await course.save({ session });
@@ -1185,7 +1198,7 @@ const updateCourse = async function (req, res) {
         await CreditPoints.findByIdAndUpdate(
           course.creditPoints,
           req.body.creditPoints,
-          { session }
+          { session },
         );
         logger.info(`Updated existing credit points: ${course.creditPoints}`);
       } else {
@@ -1196,7 +1209,7 @@ const updateCourse = async function (req, res) {
               course: course._id,
             },
           ],
-          { session }
+          { session },
         );
         course.creditPoints = creditPoints[0]._id;
         await course.save({ session });
@@ -1212,7 +1225,7 @@ const updateCourse = async function (req, res) {
         await CourseAttendance.findByIdAndUpdate(
           course.attendance,
           { sessions: sessionsMap },
-          { session }
+          { session },
         );
         logger.info(`Updated existing attendance: ${course.attendance}`);
       } else {
@@ -1223,13 +1236,17 @@ const updateCourse = async function (req, res) {
               course: course._id,
             },
           ],
-          { session }
+          { session },
         );
         course.attendance = attendance[0]._id;
         await course.save({ session });
         logger.info(`Created new attendance: ${attendance[0]._id}`);
       }
     }
+
+    // Save all changes to the course
+    await course.save({ session });
+    logger.info("Saved all course updates");
 
     logger.info("Committing transaction");
     await session.commitTransaction();
@@ -1238,6 +1255,7 @@ const updateCourse = async function (req, res) {
 
     // Get updated course with all populated fields
     const courseQuery = Course.findById(course._id)
+      .populate("teachers")
       .populate("semester")
       .populate("outcomes")
       .populate("schedule")
@@ -1280,7 +1298,7 @@ const deleteCourse = async function (req, res) {
     logger.info("Transaction started successfully");
 
     const teacher = await Teacher.findOne({ user: req.user.id }).session(
-      session
+      session,
     );
     if (!teacher) {
       logger.error(`Teacher not found for user ID: ${req.user.id}`);
@@ -1289,12 +1307,12 @@ const deleteCourse = async function (req, res) {
 
     const course = await Course.findOne({
       _id: req.params.courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     }).session(session);
 
     if (!course) {
       logger.error(`Course not found with ID: ${req.params.courseId}`);
-      throw new Error("Course not found");
+      throw new Error("Course not found or user not authorized");
     }
 
     // Delete all related documents
@@ -1330,7 +1348,7 @@ const deleteCourse = async function (req, res) {
 
     // Delete all lectures for this course
     const lectures = await Lecture.find({ course: course._id }).session(
-      session
+      session,
     );
     for (const lecture of lectures) {
       if (lecture.videoKey) {
@@ -1346,10 +1364,12 @@ const deleteCourse = async function (req, res) {
     await Lecture.deleteMany({ course: course._id }, { session });
     logger.info(`Deleted all lectures for course: ${course._id}`);
 
-    // Remove course from teacher's courses
-    teacher.courses = teacher.courses.filter((id) => !id.equals(course._id));
-    await teacher.save({ session });
-    logger.info(`Removed course from teacher's courses list`);
+    // Remove course from all associated teachers' courses
+    await Teacher.updateMany(
+      { _id: { $in: course.teachers } },
+      { $pull: { courses: course._id } },
+    ).session(session);
+    logger.info(`Removed course from all associated teachers' lists`);
 
     // Update students who have this course
     const students = await Student.find({
@@ -1358,11 +1378,11 @@ const deleteCourse = async function (req, res) {
 
     if (students && students.length > 0) {
       logger.info(
-        `Removing course from ${students.length} students' course lists`
+        `Removing course from ${students.length} students' course lists`,
       );
       const updatePromises = students.map((student) => {
         student.courses = student.courses.filter(
-          (id) => !id.equals(course._id)
+          (id) => !id.equals(course._id),
         );
         return student.save({ session });
       });
@@ -1399,7 +1419,7 @@ const deleteCourse = async function (req, res) {
   }
 };
 
-// Update attendance only (keeping existing logic)
+// Update attendance only
 const updateCourseAttendance = async function (req, res) {
   logger.info(`Updating attendance for course ID: ${req.params.courseId}`);
 
@@ -1412,7 +1432,7 @@ const updateCourseAttendance = async function (req, res) {
     logger.info("Transaction started successfully");
 
     const teacher = await Teacher.findOne({ user: req.user.id }).session(
-      session
+      session,
     );
     if (!teacher) {
       logger.error(`Teacher not found for user ID: ${req.user.id}`);
@@ -1421,12 +1441,12 @@ const updateCourseAttendance = async function (req, res) {
 
     const course = await Course.findOne({
       _id: req.params.courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     }).session(session);
 
     if (!course) {
       logger.error(`Course not found with ID: ${req.params.courseId}`);
-      throw new Error("Course not found");
+      throw new Error("Course not found or user not authorized");
     }
 
     if (req.body.sessions) {
@@ -1436,7 +1456,7 @@ const updateCourseAttendance = async function (req, res) {
         await CourseAttendance.findByIdAndUpdate(
           course.attendance,
           { sessions: sessionsMap },
-          { session }
+          { session },
         );
         logger.info(`Updated existing attendance: ${course.attendance}`);
       } else {
@@ -1447,7 +1467,7 @@ const updateCourseAttendance = async function (req, res) {
               course: course._id,
             },
           ],
-          { session }
+          { session },
         );
         course.attendance = attendance[0]._id;
         await course.save({ session });
@@ -1462,7 +1482,7 @@ const updateCourseAttendance = async function (req, res) {
 
     // Get updated course attendance
     const updatedCourse = await Course.findById(course._id).populate(
-      "attendance"
+      "attendance",
     );
 
     // Format attendance for response
