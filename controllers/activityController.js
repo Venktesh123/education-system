@@ -371,7 +371,7 @@ exports.gradeSubmission = catchAsyncErrors(async (req, res, next) => {
     // Check if the teacher owns the course
     const course = await Course.findOne({
       _id: activity.course,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -468,8 +468,7 @@ exports.getCourseActivities = catchAsyncErrors(async (req, res, next) => {
     // Verify that the user has access to this course
     if (req.user.role === "teacher") {
       console.log("Verifying teacher access");
-      const teacher = await Teacher.findOne({ user: req.user.id });
-      if (!teacher || !course.teacher.equals(teacher._id)) {
+      if (!teacher || !course.teachers.some(t => t.equals(teacher._id))) {
         console.log("Teacher not authorized for this course");
         return next(new ErrorHandler("Unauthorized access", 403));
       }
@@ -539,7 +538,7 @@ exports.getActivityById = catchAsyncErrors(async (req, res, next) => {
       const teacher = await Teacher.findOne({ user: req.user.id });
       const course = await Course.findById(activity.course);
 
-      if (!teacher || !course.teacher.equals(teacher._id)) {
+      if (!teacher || !course.teachers.some(t => t.equals(teacher._id))) {
         console.log("Teacher not authorized for this course");
         return next(new ErrorHandler("Unauthorized access", 403));
       }
@@ -615,7 +614,7 @@ exports.updateActivity = catchAsyncErrors(async (req, res, next) => {
     // Check if the teacher owns the course
     const course = await Course.findOne({
       _id: activity.course,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -830,7 +829,7 @@ exports.deleteActivity = catchAsyncErrors(async (req, res, next) => {
     // Get the course and verify ownership
     const course = await Course.findOne({
       _id: activity.course,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {

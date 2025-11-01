@@ -19,14 +19,14 @@ const handleFileUploads = async (files, allowedTypes, path, next) => {
   // Validate file types
   for (const file of filesArray) {
     console.log(
-      `Validating file: ${file.name}, type: ${file.mimetype}, size: ${file.size}`
+      `Validating file: ${file.name}, type: ${file.mimetype}, size: ${file.size}`,
     );
 
     if (!allowedTypes.includes(file.mimetype)) {
       console.log(`Invalid file type: ${file.mimetype}`);
       throw new ErrorHandler(
         `Invalid file type. Allowed types: ${allowedTypes.join(", ")}`,
-        400
+        400,
       );
     }
 
@@ -38,7 +38,7 @@ const handleFileUploads = async (files, allowedTypes, path, next) => {
       console.log(`File too large: ${file.size} bytes`);
       throw new ErrorHandler(
         `File too large. Maximum size allowed is ${maxSize / (1024 * 1024)}MB`,
-        400
+        400,
       );
     }
   }
@@ -46,7 +46,7 @@ const handleFileUploads = async (files, allowedTypes, path, next) => {
   // Upload files to Azure
   console.log("Starting file uploads to Azure");
   const uploadPromises = filesArray.map((file) =>
-    uploadFileToAzure(file, path)
+    uploadFileToAzure(file, path),
   );
 
   const uploadedFiles = await Promise.all(uploadPromises);
@@ -145,7 +145,7 @@ exports.addVideoToModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -154,7 +154,7 @@ exports.addVideoToModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -180,7 +180,7 @@ exports.addVideoToModule = catchAsyncErrors(async (req, res, next) => {
       req.files.video,
       allowedVideoTypes,
       `syllabus-videos/course-${courseId}/module-${moduleId}`,
-      next
+      next,
     );
 
     const videoFile = filesArray[0];
@@ -199,7 +199,7 @@ exports.addVideoToModule = catchAsyncErrors(async (req, res, next) => {
         req.files.thumbnail,
         allowedImageTypes,
         `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
       thumbnailData.thumbnailUrl = thumbnailFiles[0].url;
       thumbnailData.thumbnailKey = thumbnailFiles[0].key;
@@ -273,7 +273,7 @@ exports.addLinkToModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -282,7 +282,7 @@ exports.addLinkToModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -306,7 +306,7 @@ exports.addLinkToModule = catchAsyncErrors(async (req, res, next) => {
         req.files.thumbnail,
         allowedImageTypes,
         `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
       thumbnailData.thumbnailUrl = thumbnailFiles[0].url;
       thumbnailData.thumbnailKey = thumbnailFiles[0].key;
@@ -379,7 +379,7 @@ exports.addPdfToModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -388,7 +388,7 @@ exports.addPdfToModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -409,7 +409,7 @@ exports.addPdfToModule = catchAsyncErrors(async (req, res, next) => {
       req.files.pdf,
       allowedPdfTypes,
       `syllabus-pdfs/course-${courseId}/module-${moduleId}`,
-      next
+      next,
     );
 
     const uploadedPdf = uploadedFiles[0];
@@ -427,7 +427,7 @@ exports.addPdfToModule = catchAsyncErrors(async (req, res, next) => {
         req.files.thumbnail,
         allowedImageTypes,
         `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
       thumbnailData.thumbnailUrl = thumbnailFiles[0].url;
       thumbnailData.thumbnailKey = thumbnailFiles[0].key;
@@ -501,7 +501,7 @@ exports.addPptToModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -510,7 +510,7 @@ exports.addPptToModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -534,7 +534,7 @@ exports.addPptToModule = catchAsyncErrors(async (req, res, next) => {
       req.files.ppt,
       allowedPptTypes,
       `syllabus-ppts/course-${courseId}/module-${moduleId}`,
-      next
+      next,
     );
 
     const uploadedPpt = uploadedFiles[0];
@@ -552,7 +552,7 @@ exports.addPptToModule = catchAsyncErrors(async (req, res, next) => {
         req.files.thumbnail,
         allowedImageTypes,
         `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
       thumbnailData.thumbnailUrl = thumbnailFiles[0].url;
       thumbnailData.thumbnailKey = thumbnailFiles[0].key;
@@ -621,7 +621,7 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -630,7 +630,7 @@ exports.updateModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -681,26 +681,25 @@ exports.deleteVideoFromModule = catchAsyncErrors(async (req, res, next) => {
     await session.startTransaction();
     transactionStarted = true;
 
-    const { courseId, moduleId, videoId } = req.params;
-
-    // Check authorization
-    const teacher = await Teacher.findOne({ user: req.user.id });
-    if (!teacher) {
-      return next(new ErrorHandler("Teacher not found", 404));
-    }
-
-    const course = await Course.findOne({
-      _id: courseId,
-      teacher: teacher._id,
-    });
-
+            const { courseId, moduleId, videoId } = req.params;
+    
+            // Check authorization
+            const teacher = await Teacher.findOne({ user: req.user.id });
+            if (!teacher) {
+              return next(new ErrorHandler("Teacher not found", 404));
+            }
+    
+            const course = await Course.findOne({
+              _id: courseId,
+              teachers: teacher._id,
+            });
     if (!course) {
       return next(new ErrorHandler("Course not found or unauthorized", 404));
     }
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -713,7 +712,7 @@ exports.deleteVideoFromModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find and remove video
     const videoIndex = module.videos.findIndex(
-      (video) => video._id.toString() === videoId
+      (video) => video._id.toString() === videoId,
     );
 
     if (videoIndex === -1) {
@@ -781,7 +780,7 @@ exports.deleteLinkFromModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -790,7 +789,7 @@ exports.deleteLinkFromModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -803,7 +802,7 @@ exports.deleteLinkFromModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find and remove link
     const linkIndex = module.links.findIndex(
-      (link) => link._id.toString() === linkId
+      (link) => link._id.toString() === linkId,
     );
 
     if (linkIndex === -1) {
@@ -868,7 +867,7 @@ exports.deletePdfFromModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -877,7 +876,7 @@ exports.deletePdfFromModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -890,7 +889,7 @@ exports.deletePdfFromModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find and remove PDF
     const pdfIndex = module.pdfs.findIndex(
-      (pdf) => pdf._id.toString() === pdfId
+      (pdf) => pdf._id.toString() === pdfId,
     );
 
     if (pdfIndex === -1) {
@@ -958,7 +957,7 @@ exports.deletePptFromModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -967,7 +966,7 @@ exports.deletePptFromModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -980,7 +979,7 @@ exports.deletePptFromModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find and remove PPT
     const pptIndex = module.ppts.findIndex(
-      (ppt) => ppt._id.toString() === pptId
+      (ppt) => ppt._id.toString() === pptId,
     );
 
     if (pptIndex === -1) {
@@ -1049,7 +1048,7 @@ exports.updateVideoInModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -1058,7 +1057,7 @@ exports.updateVideoInModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -1092,7 +1091,7 @@ exports.updateVideoInModule = catchAsyncErrors(async (req, res, next) => {
         req.files.video,
         allowedVideoTypes,
         `syllabus-videos/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
 
       // Delete old video file
@@ -1121,7 +1120,7 @@ exports.updateVideoInModule = catchAsyncErrors(async (req, res, next) => {
         req.files.thumbnail,
         allowedImageTypes,
         `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
 
       // Delete old thumbnail
@@ -1184,7 +1183,7 @@ exports.updateLinkInModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -1193,7 +1192,7 @@ exports.updateLinkInModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -1228,7 +1227,7 @@ exports.updateLinkInModule = catchAsyncErrors(async (req, res, next) => {
         req.files.thumbnail,
         allowedImageTypes,
         `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
 
       // Delete old thumbnail
@@ -1291,7 +1290,7 @@ exports.updatePdfInModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -1300,7 +1299,7 @@ exports.updatePdfInModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -1329,7 +1328,7 @@ exports.updatePdfInModule = catchAsyncErrors(async (req, res, next) => {
         req.files.pdf,
         allowedPdfTypes,
         `syllabus-pdfs/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
 
       // Delete old PDF file
@@ -1358,7 +1357,7 @@ exports.updatePdfInModule = catchAsyncErrors(async (req, res, next) => {
         req.files.thumbnail,
         allowedImageTypes,
         `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
 
       // Delete old thumbnail
@@ -1421,7 +1420,7 @@ exports.updatePptInModule = catchAsyncErrors(async (req, res, next) => {
 
     const course = await Course.findOne({
       _id: courseId,
-      teacher: teacher._id,
+      teachers: teacher._id,
     });
 
     if (!course) {
@@ -1430,7 +1429,7 @@ exports.updatePptInModule = catchAsyncErrors(async (req, res, next) => {
 
     // Find syllabus and module
     const syllabus = await CourseSyllabus.findOne({ course: courseId }).session(
-      session
+      session,
     );
     if (!syllabus) {
       return next(new ErrorHandler("No syllabus found for this course", 404));
@@ -1462,7 +1461,7 @@ exports.updatePptInModule = catchAsyncErrors(async (req, res, next) => {
         req.files.ppt,
         allowedPptTypes,
         `syllabus-ppts/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
 
       // Delete old PPT file
@@ -1491,7 +1490,7 @@ exports.updatePptInModule = catchAsyncErrors(async (req, res, next) => {
         req.files.thumbnail,
         allowedImageTypes,
         `syllabus-thumbnails/course-${courseId}/module-${moduleId}`,
-        next
+        next,
       );
 
       // Delete old thumbnail

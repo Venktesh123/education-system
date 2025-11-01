@@ -106,7 +106,7 @@ exports.createDiscussion = catchAsyncErrors(async (req, res, next) => {
 
         const course = await Course.findOne({
           _id: courseId,
-          teacher: authorProfile._id,
+          teachers: authorProfile._id,
         }).session(session);
 
         if (!course) {
@@ -300,7 +300,7 @@ exports.getCourseDiscussions = catchAsyncErrors(async (req, res, next) => {
 
       const course = await Course.findOne({
         _id: courseId,
-        teacher: teacher._id,
+        teachers: teacher._id,
       });
 
       if (!course) {
@@ -382,7 +382,7 @@ exports.getDiscussionById = catchAsyncErrors(async (req, res, next) => {
         if (discussion.course) {
           const course = await Course.findOne({
             _id: discussion.course,
-            teacher: teacher._id,
+            teachers: teacher._id,
           });
 
           if (!course) {
@@ -470,7 +470,7 @@ exports.addComment = catchAsyncErrors(async (req, res, next) => {
         if (discussion.course) {
           const course = await Course.findOne({
             _id: discussion.course,
-            teacher: teacher._id,
+            teachers: teacher._id,
           });
 
           if (!course) {
@@ -627,7 +627,7 @@ exports.addReplyToComment = catchAsyncErrors(async (req, res, next) => {
         if (discussion.course) {
           const course = await Course.findOne({
             _id: discussion.course,
-            teacher: teacher._id,
+            teachers: teacher._id,
           });
 
           if (!course) {

@@ -15,10 +15,10 @@ const enrollCourse = async (req, res) => {
       return res.status(404).json({ error: "Student not found" });
     }
 
-    // Check if student's teacher matches course's teacher
-    if (course.teacher.toString() !== student.teacher.toString()) {
+    // Check if student's teacher is one of the course's teachers
+    if (!course.teachers.some((t) => t.equals(student.teacher))) {
       return res.status(403).json({
-        error: "You can only enroll in courses taught by your assigned teacher",
+        error: "You can only enroll in courses taught by one of your assigned teachers",
       });
     }
 
